@@ -1,0 +1,13 @@
+# macOS
+.DS_Store
+# Env / secrets (see Common Prohibitions in AGENTS.md)
+.env
+.env.*
+# Local model weights — do not commit multi-GB GGUF blobs
+*.gguf
+models/
+# Build output (paths TBD once toolchain is chosen)
+build/
+dist/
+target/
+node_modules/
