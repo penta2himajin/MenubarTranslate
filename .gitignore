@@ -5,7 +5,9 @@
 .env.*
 # Local model weights — do not commit multi-GB GGUF blobs
 *.gguf
-models/
+models/*
+# ...but Alloy specs under models/ are source of truth — track them
+!models/*.als
 # Build output (paths TBD once toolchain is chosen)
 build/
 dist/
