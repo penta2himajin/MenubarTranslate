@@ -24,6 +24,8 @@ let package = Package(
     ],
     products: [
         .library(name: "MenubarTranslateCore", targets: ["MenubarTranslateCore"]),
+        .library(name: "MTEngineLlama", targets: ["MTEngineLlama"]),
+        .library(name: "MTEngineMLX", targets: ["MTEngineMLX"]),
         .executable(name: "mbt", targets: ["mbt"]),
     ],
     dependencies: [
@@ -36,16 +38,26 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             path: "src",
-            exclude: ["Core/Tests.swift"]
+            exclude: ["Core/Tests.swift", "EngineLlama", "EngineMLX"]
+        ),
+        .target(
+            name: "MTEngineLlama",
+            dependencies: ["MenubarTranslateCore"],
+            path: "src/EngineLlama"
+        ),
+        .target(
+            name: "MTEngineMLX",
+            dependencies: ["MenubarTranslateCore"],
+            path: "src/EngineMLX"
         ),
         .executableTarget(
             name: "mbt",
-            dependencies: ["MenubarTranslateCore"],
+            dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX"],
             path: "mbt"
         ),
         .testTarget(
             name: "MenubarTranslateCoreTests",
-            dependencies: ["MenubarTranslateCore"],
+            dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX"],
             path: "tests"
         ),
     ]

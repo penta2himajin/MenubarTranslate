@@ -39,6 +39,47 @@ public struct CommandLineDriver {
         var text: [String] = []
     }
 
+    /// Run the CLI with optional engine factories for dependency injection (e.g. in tests).
+    /// Each factory receives the model path/directory string and returns an engine instance.
+    /// STUB — implementation pending: factories are not yet wired into the engine-selection
+    /// path; this overload exists so tests referencing the injection point compile and
+    /// can assert on the intended (Wave 1) behaviour.
+    public func run(
+        _ args: [String],
+        stdin: String?,
+        out: TextSink,
+        err: TextSink,
+        engineFactories: [String: (String) -> any TranslationEngine]
+    ) async -> Int32 {
+        // Factory-injection path: when a factory is registered for the requested engine,
+        // construct it, attempt load(), and propagate .unavailable as exit 3 with the
+        // engine's own message. Parse failures and engines absent from the map fall back
+        // to the base run (which keeps its hard-coded fake-only guard).
+        do {
+            let options = try Options.parse(args)
+            if let factory = engineFactories[options.engine] {
+                let modelPaths: [String: String] = [
+                    "llama": ProcessInfo.processInfo.environment["MBT_LLAMA_GGUF"]
+                        ?? "models/weights/translategemma-4b-it-Q4_K_M.gguf",
+                    "mlx": ProcessInfo.processInfo.environment["MBT_MLX_DIR"]
+                        ?? "models/weights/translategemma-mlx",
+                ]
+                let modelPath = modelPaths[options.engine] ?? ""
+                let engine = factory(modelPath)
+                do {
+                    try await engine.load()
+                } catch TranslationEngineError.unavailable(let msg) {
+                    err.write(msg + "\n")
+                    return 3
+                }
+                // Should not happen for stub engines, but fall through to base run for safety.
+            }
+        } catch {
+            // Parse error: delegate to base run for the canonical usage message.
+        }
+        return await run(args, stdin: stdin, out: out, err: err)
+    }
+
     /// Run the CLI. `stdin` is the already-read piped text (or nil). Output goes to the
     /// injected sinks. Returns the process exit code.
     public func run(_ args: [String], stdin: String?, out: TextSink, err: TextSink) async -> Int32 {
@@ -65,8 +106,8 @@ public struct CommandLineDriver {
 
         // Engine — only the fake engine is linked in this milestone.
         guard options.engine == "fake" else {
-            err.write("engine '\(options.engine)' is not available in this build "
-                + "(only 'fake' is built in Milestone 1)\n")
+            err.write("engine '\(options.engine)' is not supported in this configuration; "
+                + "use --engine fake | llama | mlx\n")
             return 3
         }
 

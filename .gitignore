@@ -16,3 +16,6 @@ node_modules/
 # SwiftPM
 .build/
 .swiftpm/
+# Agent-harness scratch (devloop/GLM)
+.devloop/
+.claude-glm-task.md
