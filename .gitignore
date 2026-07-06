@@ -8,8 +8,11 @@
 models/*
 # ...but Alloy specs under models/ are source of truth — track them
 !models/*.als
-# Build output (paths TBD once toolchain is chosen)
+# Build output
 build/
 dist/
 target/
 node_modules/
+# SwiftPM
+.build/
+.swiftpm/

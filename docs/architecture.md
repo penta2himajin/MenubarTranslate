@@ -53,5 +53,7 @@ already downloaded (download done ahead of time while `Normal`).
 ## Open questions
 
 Several choices rest on measurements not yet done on real hardware. See
-`docs/validation.md`; results there may reopen ADR 0001 or 0006, or the currently
-undecided implementation-language / toolchain question.
+`docs/validation.md`; results there may reopen ADR 0001 or 0006.
+
+The implementation language and toolchain are **settled**: native Swift + SwiftUI via
+SwiftPM (ADR 0007).

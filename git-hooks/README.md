@@ -6,7 +6,7 @@ Sharable git hooks for consumer repos.
 
 | File | Purpose |
 |---|---|
-| `pre-push` | Run format / lint / clippy locally before `git push`. Detects toolchains (Cargo, npm, ruff) by file presence and skips anything the repo doesn't have. |
+| `pre-push` | Run format / lint / consistency checks locally before `git push`. Detects toolchains by file presence and skips anything the repo doesn't have: **SwiftPM** (`Package.swift`) → SwiftFormat + `oxidtr check` consistency gate; Cargo (`Cargo.toml`) → `cargo fmt` + `cargo clippy`; npm (`package.json`) → lint script; Python (`pyproject.toml`) → ruff. |
 
 ## Install (per repo)
 

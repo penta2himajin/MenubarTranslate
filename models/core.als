@@ -68,6 +68,36 @@ sig TranslationResult {
   backend: one Backend
 }
 
+-- Weight-lifecycle events (ADR 0005). These drive WeightState transitions; they are
+-- orthogonal to pressure and never carry a PressureLevel.
+abstract sig LifecycleEvent {}
+one sig LoadRequested  extends LifecycleEvent {}
+one sig LoadCompleted  extends LifecycleEvent {}
+one sig LoadFailed     extends LifecycleEvent {}
+one sig InferStarted   extends LifecycleEvent {}
+one sig InferFinished  extends LifecycleEvent {}
+one sig EvictRequested extends LifecycleEvent {}
+one sig EvictCompleted extends LifecycleEvent {}
+
+-- A single step of the weight-lifecycle state machine (ADR 0005). The LegalTransitions
+-- fact below IS the transition table: any Transition not matching a row is impossible.
+sig Transition {
+  from:  one WeightState,
+  event: one LifecycleEvent,
+  to:    one WeightState
+}
+
+fact LegalTransitions {
+  all t: Transition |
+    (t.from = Unloaded  and t.event = LoadRequested  and t.to = Loading)   or
+    (t.from = Loading   and t.event = LoadCompleted  and t.to = Ready)     or
+    (t.from = Loading   and t.event = LoadFailed     and t.to = Unloaded)  or
+    (t.from = Ready     and t.event = InferStarted   and t.to = Inferring) or
+    (t.from = Inferring and t.event = InferFinished  and t.to = Ready)     or
+    (t.from = Ready     and t.event = EvictRequested and t.to = Evicting)  or
+    (t.from = Evicting  and t.event = EvictCompleted and t.to = Unloaded)
+}
+
 -- Eviction reacts to pressure/timeout; loading reacts to user intent only (ADR 0004).
 pred canEvict[r: Runtime] {
   r.weight = Ready or r.weight = Inferring
@@ -83,4 +113,16 @@ fun activeBackend[r: Runtime]: one Backend { r.backend }
 -- Critical pressure must not leave weights mid-inference (ADR 0004: immediate evict).
 assert CriticalNotInferring {
   all r: Runtime | r.pressure = Critical implies r.weight != Inferring
+}
+
+-- The weights only ever become Loading via an explicit user-intent LoadRequested — the
+-- ADR 0004 asymmetry that makes evict<->load oscillation impossible.
+assert LoadingOnlyFromIntent {
+  all t: Transition | t.to = Loading implies t.event = LoadRequested
+}
+
+-- Every translation result is produced by one of the two known backends (ADR 0001
+-- primary / ADR 0006 fallback). Also references TranslationResult so it is not orphaned.
+assert ResultBackendKnown {
+  all r: TranslationResult | r.backend = LlamaMetal or r.backend = OSTranslation
 }
