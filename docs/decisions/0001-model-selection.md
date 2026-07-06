@@ -1,6 +1,7 @@
 # ADR 0001 — Model selection: TranslateGemma-4B (GGUF Q4_K_M)
 
-- Status: Accepted
+- Status: Superseded by ADR 0008 (2026-07-06) — model choice upheld, runtime
+  changed to MLX 4-bit on measured EN→JA fidelity of GGUF `Q4_K_M`
 - Date: 2026-07-05
 
 ## Context

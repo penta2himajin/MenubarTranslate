@@ -18,6 +18,24 @@ ahead-of-time download and confirm the fallback is actually fast enough. → **A
 Verify GGUF `Q4_K_M` translation quality on-device (naive MLX 4-bit has been reported
 to degrade; the choice here is specifically GGUF `Q4_K_M`). → can reopen **ADR 0001**.
 
+**Measured 2026-07-06** (`mbt-bench`, 5 configs × 16 sentences, transcripts in
+`docs/bench/2026-07-06-m2.md`). This **did** reopen ADR 0001 → superseded by
+**ADR 0008**:
+
+- TranslateGemma-4B GGUF `Q4_K_M`: JA→EN clean; **EN→JA emitted artifacts in 4/8
+  sentences** (stray punctuation, Cyrillic fragments, one fully-Russian output).
+  Root cause not yet isolated — quantization vs. LlamaEngine prompt/sampling
+  handling. **Still open:** isolate it; a fix flips the default engine back (ADR
+  0008). MLX 4-bit output for the same model was clean, which weakly points at
+  the GGUF pipeline rather than 4-bit quantization per se.
+- TranslateGemma-4B MLX 4-bit: clean both directions — the reported naive-MLX
+  degradation did not reproduce for this model.
+- Timings: GGUF cold/warm load 0.44–0.49 s (confirms ADR 0002's ~0.5 s reload);
+  MLX load ~2.1–2.3 s. Residency: gemma-mlx ~2.27 GB, hymt-7b-mlx ~4.05 GB,
+  hymt-1.8b-mlx ~0.99 GB; GGUF `phys_footprint` deltas are not meaningful (mmap).
+- Caveat: measured on a 64 GB machine. Latency/quality transfer; behaviour under
+  actual 8 GB memory pressure remains unmeasured.
+
 ## 4. MoE expert cache hit-rate (only if the MoE path is revisited)
 
 If a larger-than-RAM MoE model is ever pursued (e.g. Qwen3-30B-A3B) with expert
