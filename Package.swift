@@ -30,6 +30,14 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
+        .package(url: "https://github.com/ml-explore/mlx-swift-lm", from: "3.31.4"),
+        // mlx-swift is transitively pulled by mlx-swift-lm; declared directly so MTEngineMLX
+        // can `import MLX` for `Memory.clearCache()` (evict releases the Metal buffer cache).
+        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.31.4"),
+        // swift-transformers: provides `Tokenizers.AutoTokenizer`, the concrete tokenizer
+        // implementation that MLXLMCommon's `TokenizerLoader` protocol wraps. Used for
+        // local (offline) tokenizer loading from a model directory. Isolated to MTEngineMLX.
+        .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.14"),
     ],
     targets: [
         .target(
@@ -47,7 +55,17 @@ let package = Package(
         ),
         .target(
             name: "MTEngineMLX",
-            dependencies: ["MenubarTranslateCore"],
+            dependencies: [
+                "MenubarTranslateCore",
+                .product(name: "MLXLLM", package: "mlx-swift-lm"),
+                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+                // MLX for `Memory.clearCache()` — evict releases the Metal buffer cache
+                // while keeping the runtime alive for a warm reload (ADR 0002).
+                .product(name: "MLX", package: "mlx-swift"),
+                // Concrete tokenizer implementation wrapped by the local tokenizer loader.
+                // Product `Transformers` exports the `Tokenizers` module (target name).
+                .product(name: "Transformers", package: "swift-transformers"),
+            ],
             path: "src/EngineMLX"
         ),
         .executableTarget(

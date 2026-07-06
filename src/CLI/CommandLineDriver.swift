@@ -72,7 +72,47 @@ public struct CommandLineDriver {
                     err.write(msg + "\n")
                     return 3
                 }
-                // Should not happen for stub engines, but fall through to base run for safety.
+
+                // Engine loaded — parse direction and input, run the full service path.
+                let direction: Direction
+                do {
+                    direction = try Direction.parse(options.direction)
+                } catch {
+                    err.write("\(error)\n")
+                    return 1
+                }
+
+                let joined = options.text.joined(separator: " ")
+                let input = joined.isEmpty ? (stdin?.trimmingCharacters(in: .newlines) ?? "") : joined
+                guard !input.isEmpty else {
+                    err.write("no input text (pass a positional argument or pipe via stdin)\n")
+                    return 1
+                }
+
+                var startPressure: PressureLevel = .normal
+                if let raw = options.simulatePressure, let level = Self.pressureLevel(raw) {
+                    startPressure = level
+                }
+
+                let clock = SystemClock()
+                let pressure = FakePressureSource(initial: startPressure)
+                let manager = ResidencyManager(config: makeConfig(options), clock: clock, pressureSource: pressure)
+                let service = TranslationService(engine: engine, residency: manager)
+                do {
+                    let outcome = try await service.translate(input, direction)
+                    if options.json {
+                        out.write(Self.json(outcome) + "\n")
+                    } else {
+                        out.write(outcome.text + "\n")
+                    }
+                    if options.verbose {
+                        err.write(Self.traceLine(outcome.trace) + "\n")
+                    }
+                    return 0
+                } catch {
+                    err.write("translation failed: \(error)\n")
+                    return 2
+                }
             }
         } catch {
             // Parse error: delegate to base run for the canonical usage message.
