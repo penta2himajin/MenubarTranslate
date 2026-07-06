@@ -60,7 +60,7 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
 
         // Per-model stop-token configuration so generation terminates at the right
         // token and template artifacts do not leak into the decoded output.
-        configureStopTokens()
+        await configureStopTokens()
     }
 
     public func translate(_ text: String, _ pair: LanguagePair) async throws -> String {
@@ -120,29 +120,25 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
 
     // MARK: - Stop-token configuration
 
-    private func configureStopTokens() {
+    private func configureStopTokens() async {
         guard let container = container else { return }
         switch modelType {
         case "gemma3":
             // The model emits <end_of_turn> to finish; register it as an extra EOS
             // so the generation loop stops before emitting it.
-            Task { @Sendable in
-                await container.update { ctx in
-                    ctx.configuration.extraEOSTokens.insert("<end_of_turn>")
-                }
+            await container.update { ctx in
+                ctx.configuration.extraEOSTokens.insert("<end_of_turn>")
             }
         default:
             if modelType.contains("hunyuan") {
                 // eos_token_id (120020) is loaded from generation_config.json; add the
                 // known special tokens as decoded stop-strings as a safety net.
-                Task { @Sendable in
-                    await container.update { ctx in
-                        ctx.configuration.stopStrings = [
-                            "<|extra_0|>", "<|startoftext|>",
-                            "<｜hy_Assistant｜>", "<｜hy_place▁holder▁no▁2｜>",
-                            "<｜hy_begin▁of▁sentence｜>",
-                        ]
-                    }
+                await container.update { ctx in
+                    ctx.configuration.stopStrings = [
+                        "<|extra_0|>", "<|startoftext|>",
+                        "<｜hy_Assistant｜>", "<｜hy_place▁holder▁no▁2｜>",
+                        "<｜hy_begin▁of▁sentence｜>",
+                    ]
                 }
             }
         }

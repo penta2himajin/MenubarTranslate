@@ -96,6 +96,14 @@ if llamaVendored {
     ]
 }
 
+targets += [
+    .executableTarget(
+        name: "mbt-bench",
+        dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX"],
+        path: "bench"
+    ),
+]
+
 let package = Package(
     name: "MenubarTranslate",
     platforms: [
@@ -108,6 +116,7 @@ let package = Package(
         .library(name: "MTEngineLlama", targets: ["MTEngineLlama"]),
         .library(name: "MTEngineMLX", targets: ["MTEngineMLX"]),
         .executable(name: "mbt", targets: ["mbt"]),
+        .executable(name: "mbt-bench", targets: ["mbt-bench"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-argument-parser", from: "1.3.0"),
