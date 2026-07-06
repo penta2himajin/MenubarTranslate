@@ -58,3 +58,21 @@ struct TranslationResult: Equatable {
     let backend: Backend
 }
 
+enum LifecycleEvent: Equatable, Hashable, CaseIterable {
+    case loadRequested
+    case loadCompleted
+    case loadFailed
+    case inferStarted
+    case inferFinished
+    case evictRequested
+    case evictCompleted
+}
+
+/// Invariants:
+/// - LegalTransitions
+struct Transition: Equatable {
+    let from: WeightState
+    let event: LifecycleEvent
+    let to: WeightState
+}
+

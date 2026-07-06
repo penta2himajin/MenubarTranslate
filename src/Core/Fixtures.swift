@@ -18,6 +18,9 @@ func defaultBackend() -> Backend { .llamaMetal }
 /// Factory: default value for Flag
 func defaultFlag() -> Flag { .yes }
 
+/// Factory: default value for LifecycleEvent
+func defaultLifecycleEvent() -> LifecycleEvent { .loadRequested }
+
 /// Factory: create a default valid Runtime
 func defaultRuntime() -> Runtime {
     Runtime(
@@ -51,6 +54,15 @@ func defaultTranslationResult() -> TranslationResult {
         request: defaultTranslationRequest(),
         output: defaultStr(),
         backend: defaultBackend()
+    )
+}
+
+/// Factory: create a default valid Transition
+func defaultTransition() -> Transition {
+    Transition(
+        from: defaultWeightState(),
+        event: defaultLifecycleEvent(),
+        to: defaultWeightState()
     )
 }
 

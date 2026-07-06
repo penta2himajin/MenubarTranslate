@@ -11,6 +11,7 @@ Settled engineering judgements for MenubarTranslate. English-only per
 | 0004 | Thrash avoidance: asymmetric evict/load + hysteresis | Accepted |
 | 0005 | Pressure as an orthogonal state-machine domain | Accepted |
 | 0006 | Critical-pressure degradation and OS fallback | Accepted |
+| 0007 | Toolchain: Swift + SwiftUI, native, via SwiftPM | Accepted |
 
 Several decisions depend on measurements that are **not yet done on real hardware**;
 those are tracked in `docs/validation.md` and may reopen the relevant ADR.

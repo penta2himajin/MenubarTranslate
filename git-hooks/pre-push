@@ -32,6 +32,21 @@ run() {
     fi
 }
 
+# --- Swift (SwiftPM) -------------------------------------------------------
+if [[ -f Package.swift ]]; then
+    run "swift build"                swift build
+    command -v swiftformat >/dev/null 2>&1 && run "swiftformat --lint" swiftformat --lint .
+    command -v swiftlint  >/dev/null 2>&1 && run "swiftlint --strict"  swiftlint --strict
+    # run "swift test"               swift test
+fi
+
+# --- Alloy model consistency (oxidtr) ---------------------------------------
+# models/core.als is the single source of truth for src/Core (ADR 0007).
+if [[ -f models/core.als && -d src/Core ]]; then
+    command -v oxidtr >/dev/null 2>&1 \
+        && run "oxidtr check" oxidtr check --model models/core.als --impl src/Core
+fi
+
 # --- Rust (Cargo) ----------------------------------------------------------
 if [[ -f Cargo.toml ]]; then
     run "cargo fmt --check"      cargo fmt --all -- --check
