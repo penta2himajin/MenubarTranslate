@@ -16,6 +16,8 @@ node_modules/
 # SwiftPM
 .build/
 .swiftpm/
+# Vendored xcframeworks — built locally by scripts/build-llama-xcframework.sh
+vendor/
 # Agent-harness scratch (devloop/GLM)
 .devloop/
 .claude-glm-task.md

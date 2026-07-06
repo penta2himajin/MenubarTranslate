@@ -1,5 +1,6 @@
 // swift-tools-version:6.0
 import PackageDescription
+import Foundation
 
 // MenubarTranslate — SwiftPM manifest. Toolchain pinned by ADR 0007.
 //
@@ -15,6 +16,86 @@ import PackageDescription
 // Milestone 1 ships only the pure-logic core and the `mbt` console wrapper. The native
 // engines (llama.cpp/Metal, MLX) land behind the `TranslationEngine` protocol in a
 // later PR, in their own targets, so this core stays fast to build and portable.
+
+// ponytail: conditional xcframework — vendor/llama.xcframework is built by
+// scripts/build-llama-xcframework.sh and .gitignored (too large for GitHub).
+// Clean checkouts compile without it; MTEngineLlama degrades to an honest stub
+// via `#if canImport(llama)`.  Running the script enables the real engine.
+//
+// Use an absolute path derived from #file so the check works regardless of the
+// working directory when SwiftPM evaluates this manifest (e.g. in a sandboxed
+// subprocess during `swift test`).
+// In SwiftPM's manifest runner, #file expands to a relative path like
+// "main/Package.swift" (the manifest runner places Package.swift under a "main/"
+// subdirectory).  Two deletingLastPathComponent() calls walk up to the real
+// package root regardless of the process working directory.
+let _packageRoot = URL(fileURLWithPath: #file)
+    .deletingLastPathComponent()  // removes "Package.swift" → .../main
+    .deletingLastPathComponent()  // removes "main"          → package root
+    .path
+let llamaVendored = FileManager.default.fileExists(
+    atPath: _packageRoot + "/vendor/llama.xcframework")
+
+var targets: [Target] = [
+    .target(
+        name: "MenubarTranslateCore",
+        dependencies: [
+            .product(name: "ArgumentParser", package: "swift-argument-parser"),
+        ],
+        path: "src",
+        exclude: ["Core/Tests.swift", "EngineLlama", "EngineMLX"]
+    ),
+    .target(
+        name: "MTEngineMLX",
+        dependencies: [
+            "MenubarTranslateCore",
+            .product(name: "MLXLLM", package: "mlx-swift-lm"),
+            .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
+            // MLX for `Memory.clearCache()` — evict releases the Metal buffer cache
+            // while keeping the runtime alive for a warm reload (ADR 0002).
+            .product(name: "MLX", package: "mlx-swift"),
+            // Concrete tokenizer implementation wrapped by the local tokenizer loader.
+            // Product `Transformers` exports the `Tokenizers` module (target name).
+            .product(name: "Transformers", package: "swift-transformers"),
+        ],
+        path: "src/EngineMLX"
+    ),
+    .executableTarget(
+        name: "mbt",
+        dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX"],
+        path: "mbt"
+    ),
+    .testTarget(
+        name: "MenubarTranslateCoreTests",
+        dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX"],
+        path: "tests"
+    ),
+]
+
+// MTEngineLlama: link against the real xcframework when it is present, otherwise
+// compile stub-only (no llama import → #if canImport(llama) selects the stub).
+if llamaVendored {
+    targets += [
+        .binaryTarget(
+            name: "llama",
+            path: "vendor/llama.xcframework"
+        ),
+        .target(
+            name: "MTEngineLlama",
+            dependencies: ["MenubarTranslateCore", "llama"],
+            path: "src/EngineLlama"
+        ),
+    ]
+} else {
+    targets += [
+        .target(
+            name: "MTEngineLlama",
+            dependencies: ["MenubarTranslateCore"],
+            path: "src/EngineLlama"
+        ),
+    ]
+}
+
 let package = Package(
     name: "MenubarTranslate",
     platforms: [
@@ -39,44 +120,5 @@ let package = Package(
         // local (offline) tokenizer loading from a model directory. Isolated to MTEngineMLX.
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.14"),
     ],
-    targets: [
-        .target(
-            name: "MenubarTranslateCore",
-            dependencies: [
-                .product(name: "ArgumentParser", package: "swift-argument-parser"),
-            ],
-            path: "src",
-            exclude: ["Core/Tests.swift", "EngineLlama", "EngineMLX"]
-        ),
-        .target(
-            name: "MTEngineLlama",
-            dependencies: ["MenubarTranslateCore"],
-            path: "src/EngineLlama"
-        ),
-        .target(
-            name: "MTEngineMLX",
-            dependencies: [
-                "MenubarTranslateCore",
-                .product(name: "MLXLLM", package: "mlx-swift-lm"),
-                .product(name: "MLXLMCommon", package: "mlx-swift-lm"),
-                // MLX for `Memory.clearCache()` — evict releases the Metal buffer cache
-                // while keeping the runtime alive for a warm reload (ADR 0002).
-                .product(name: "MLX", package: "mlx-swift"),
-                // Concrete tokenizer implementation wrapped by the local tokenizer loader.
-                // Product `Transformers` exports the `Tokenizers` module (target name).
-                .product(name: "Transformers", package: "swift-transformers"),
-            ],
-            path: "src/EngineMLX"
-        ),
-        .executableTarget(
-            name: "mbt",
-            dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX"],
-            path: "mbt"
-        ),
-        .testTarget(
-            name: "MenubarTranslateCoreTests",
-            dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX"],
-            path: "tests"
-        ),
-    ]
+    targets: targets
 )

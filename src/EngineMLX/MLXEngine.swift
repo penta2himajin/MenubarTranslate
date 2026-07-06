@@ -73,11 +73,8 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
 
         switch modelType {
         case "gemma3":
-            // TranslateGemma-4B: render the chat template manually (the model's
-            // jinja template expects a custom content structure). The tokenizer
-            // adds <bos> automatically (add_bos_token=true); the added tokens
-            // (<start_of_turn>/<end_of_turn>) are recognised as single tokens.
-            let prompt = Self.gemmaPrompt(text: text, pair: pair)
+            // TranslateGemma-4B: render via shared PromptBuilder (canonical source in core).
+            let prompt = PromptBuilder.gemma(text: text, pair: pair)
             tokens = await container.encode(prompt)
             parameters = GenerateParameters(maxTokens: 512, temperature: 0.01)
             stripper = Self.stripGemma
@@ -151,19 +148,7 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
         }
     }
 
-    // MARK: - Prompt builders
-
-    private static func gemmaPrompt(text: String, pair: LanguagePair) -> String {
-        """
-        <start_of_turn>user
-        You are a professional \(pair.sourceName) (\(pair.sourceCode)) to \(pair.targetName) (\(pair.targetCode)) translator. Your goal is to accurately convey the meaning and nuances of the original \(pair.sourceName) text while adhering to \(pair.targetName) grammar, vocabulary, and cultural sensitivities.
-        Produce only the \(pair.targetName) translation, without any additional explanations or commentary. Please translate the following \(pair.sourceName) text into \(pair.targetName):
-
-
-        \(text)<end_of_turn>
-        <start_of_turn>model
-        """
-    }
+    // MARK: - Prompt builders (MLX-specific; shared prompt roots live in PromptBuilder)
 
     private static func hunyuanMessage(text: String, pair: LanguagePair) -> String {
         """

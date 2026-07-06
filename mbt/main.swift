@@ -32,4 +32,8 @@ let factories: [String: (String) -> any TranslationEngine] = [
 let code = await CommandLineDriver().run(
     args, stdin: stdinText, out: out, err: err, engineFactories: factories
 )
-exit(code)
+// _exit, not exit: llama.cpp b9878 aborts in a ggml-metal static destructor at process
+// teardown (upstream GGML_ASSERT in ggml-metal-device.m:622), which would corrupt the
+// exit code to 134 after a successful run. All output goes through unbuffered
+// FileHandle writes, so skipping atexit/destructors loses nothing.
+_exit(code)
