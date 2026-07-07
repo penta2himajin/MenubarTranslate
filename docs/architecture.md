@@ -50,6 +50,17 @@ context) + evict-after-use, plus a **capability-gated** fallback to Apple's on-d
 Translation framework. The gate requires: API present ∧ ja↔en supported ∧ OS model
 already downloaded (download done ahead of time while `Normal`).
 
+## App layer
+
+The core stays SwiftUI-free. `AppRuntime` is the public facade (translate, tick,
+snapshot/onChange), `AppViewModel` (@Observable, Observation only) sits on top for
+binding, and the `MenubarTranslateApp` target (`app/`, macOS 15) owns everything
+OS-facing: the `MenuBarExtra` shell, a 1 s tick loop driving idle-timeout, and the
+Translation-framework wiring — `LanguageAvailability` probes feed the ADR 0006
+capability gate, and live `TranslationSession`s are handed to the core through
+`OSTranslationEngine`'s closure seams. Default runtime is llama.cpp/GGUF (ADR 0008);
+MLX is the alternate.
+
 ## Open questions
 
 Several choices rest on measurements not yet done on real hardware. See
