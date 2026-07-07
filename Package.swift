@@ -102,14 +102,21 @@ targets += [
         dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX"],
         path: "bench"
     ),
+    // The menu-bar app shell (M3). SwiftUI + Translation-framework code lives here,
+    // never in the core (ADR 0006 seam: core exposes closures, app owns the OS APIs).
+    .executableTarget(
+        name: "MenubarTranslateApp",
+        dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX"],
+        path: "app"
+    ),
 ]
 
 let package = Package(
     name: "MenubarTranslate",
     platforms: [
-        // mlx-swift (engine PR) requires macOS 14; rises to .v15 when the ADR-0006
-        // Translation-framework fallback lands.
-        .macOS(.v14)
+        // macOS 15: the ADR-0006 Translation-framework fallback (TranslationSession,
+        // LanguageAvailability) needs it. mlx-swift's own floor is 14.
+        .macOS(.v15)
     ],
     products: [
         .library(name: "MenubarTranslateCore", targets: ["MenubarTranslateCore"]),
