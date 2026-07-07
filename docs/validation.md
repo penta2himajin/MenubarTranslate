@@ -24,10 +24,17 @@ to degrade; the choice here is specifically GGUF `Q4_K_M`). → can reopen **ADR
 
 - TranslateGemma-4B GGUF `Q4_K_M`: JA→EN clean; **EN→JA emitted artifacts in 4/8
   sentences** (stray punctuation, Cyrillic fragments, one fully-Russian output).
-  Root cause not yet isolated — quantization vs. LlamaEngine prompt/sampling
-  handling. **Still open:** isolate it; a fix flips the default engine back (ADR
-  0008). MLX 4-bit output for the same model was clean, which weakly points at
-  the GGUF pipeline rather than 4-bit quantization per se.
+  **Root-caused 2026-07-07:** `PromptBuilder.gemma` ended the prompt at
+  `<start_of_turn>model` without the trailing newline the official gemma
+  template requires. Both engines fed byte-identical token sequences (verified
+  by dumping IDs), so the off-template prompt affected both; GGUF `Q4_K_M`
+  greedy decoding happened to fall off-distribution on EN→JA while MLX 4-bit
+  happened to survive. With the newline restored, all 16 GGUF sentences are
+  clean and EN→JA got faster (p50 496 → 350 ms — no wasted artifact tokens);
+  MLX output unchanged-clean. **Quantization was not the cause; `Q4_K_M`
+  fidelity is adequate.** Report: `docs/bench/2026-07-07-gguf-prompt-fix.md`.
+  Consequence: per ADR 0008's own terms the default runtime flips back to GGUF
+  (see the 0008 amendment).
 - TranslateGemma-4B MLX 4-bit: clean both directions — the reported naive-MLX
   degradation did not reproduce for this model.
 - Timings: GGUF cold/warm load 0.44–0.49 s (confirms ADR 0002's ~0.5 s reload);
