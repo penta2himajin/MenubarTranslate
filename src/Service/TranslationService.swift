@@ -56,7 +56,7 @@ final class TranslationService {
         }
 
         try residency.beginInference()
-        let output = try await engine.translate(text, direction)
+        let output = try await engine.translate(text, direction.pair)
         try residency.endInference()
 
         await drainEviction()

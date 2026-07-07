@@ -72,7 +72,7 @@ extension CommandLineDriver {
                         try manager.completeLoad()
                     }
                     try manager.beginInference()
-                    let result = try await engine.translate(text, dir)
+                    let result = try await engine.translate(text, dir.pair)
                     try manager.endInference()
                     await drain()
                     out.write("= \(result)\n")

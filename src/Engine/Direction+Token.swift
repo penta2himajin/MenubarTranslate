@@ -9,6 +9,14 @@ extension Direction {
         }
     }
 
+    /// Maps the internal `Direction` to the public `LanguagePair` seam used by engine targets.
+    var pair: LanguagePair {
+        switch self {
+        case .jaToEn: return .jaToEn
+        case .enToJa: return .enToJa
+        }
+    }
+
     /// Parse a CLI/string token into a direction. Throws `DirectionParseError` on garbage.
     static func parse(_ raw: String) throws -> Direction {
         guard let direction = Direction.allCases.first(where: { $0.token == raw }) else {

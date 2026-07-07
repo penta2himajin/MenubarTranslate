@@ -51,6 +51,9 @@ git config core.hooksPath git-hooks
 # Optional: SwiftFormat and SwiftLint (hook skips gracefully if absent):
 brew install swiftformat swiftlint
 
+# Build vendor/llama.xcframework (needed only for --engine llama):
+./scripts/build-llama-xcframework.sh   # pins llama.cpp tag b9878; idempotent
+
 # oxidtr — needed only when models/core.als changes:
 cargo install --path ../oxidtr   # or ensure a local build is on PATH
 ```
