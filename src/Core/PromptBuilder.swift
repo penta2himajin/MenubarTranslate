@@ -13,8 +13,13 @@ public enum PromptBuilder {
     /// Rendered manually because the model's jinja template expects a custom
     /// content structure.  The tokenizer adds <bos> automatically
     /// (add_bos_token=true in tokenizer_config.json); this string starts at
-    /// <start_of_turn> and ends with the opening <start_of_turn>model turn
+    /// <start_of_turn> and ends with the opening `<start_of_turn>model\n` turn
     /// so the model continues directly into the translation.
+    ///
+    /// The trailing newline after `model` is load-bearing: the official gemma
+    /// template terminates the turn header with "\n", and omitting it pushed
+    /// Q4_K_M greedy decoding off-distribution — EN→JA emitted instruction-like
+    /// prefixes and wrong-language output (docs/bench/2026-07-06-m2.md).
     ///
     /// The triple-newline before the user text is the separator the original
     /// TranslateGemma fine-tune was trained on.
@@ -27,6 +32,7 @@ public enum PromptBuilder {
 
         \(text)<end_of_turn>
         <start_of_turn>model
+
         """
     }
 

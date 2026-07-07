@@ -1,6 +1,7 @@
 # ADR 0008 — Runtime selection: TranslateGemma-4B on MLX 4-bit (measured)
 
-- Status: Accepted
+- Status: Accepted, amended 2026-07-07 — **default runtime is GGUF/llama.cpp**
+  (see Amendment below)
 - Date: 2026-07-06
 - Supersedes: ADR 0001
 
@@ -74,3 +75,22 @@ Hy-MT2-1.8B is rejected on output quality despite the best speed and footprint.
   clauses in EN→JA).
 - **hymt-7b-gguf as default**: lexical errors plus the same unresolved GGUF
   pipeline questions, without gemma's quality headroom.
+
+## Amendment (2026-07-07): EN→JA artifacts root-caused — default flips back to GGUF
+
+The condition this ADR set for reverting the default has been met. The EN→JA
+artifacts were **not** quantization: `PromptBuilder.gemma` ended the prompt at
+`<start_of_turn>model` without the trailing newline the official gemma template
+requires. Both engines fed byte-identical token IDs (verified by dumping them),
+so the prompt was off-template everywhere; GGUF `Q4_K_M` greedy decoding fell
+off-distribution on EN→JA while MLX 4-bit happened to survive.
+
+With the newline restored (pinned by `tests/PromptBuilderTests.swift`), all 16
+GGUF sentences are clean and EN→JA is faster (p50 496 → 350 ms; ~163 chars/s) —
+see `docs/bench/2026-07-07-gguf-prompt-fix.md`.
+
+**Amended decision:** the default engine is **LlamaEngine running
+TranslateGemma-4B GGUF `Q4_K_M`** — ~4× faster loads (0.44 s, the reload figure
+ADR 0002 assumes), ~2× decode throughput, and mmap-backed weights that degrade
+more gracefully under memory pressure. MLXEngine stays available behind
+`--engine mlx` as the quality-verified alternate path.
