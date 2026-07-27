@@ -53,12 +53,19 @@ The 4096 default was never justified by the workload — prompts here run ~100
 tokens and generation is capped at 512. Re-running every config at
 `MBT_N_CTX=1024`, with **byte-identical transcripts in all four cases**:
 
-| Config | footprint 4096 → 1024 | p50 4096 → 1024 | chars/s 4096 → 1024 |
-|---|---|---|---|
-| gemma4-e2b-gguf | 229.9 → **174.9 MB** | 317 → **198.5 ms** | 134 → **241.5** |
-| milmmt-4b-gguf | 628.3 → **219.8 MB** | 296 → **265.3 ms** | 136 → **174.9** |
-| gemma-gguf (shipping default) | 628.3 → **222.2 MB** | 770 → **330.9 ms** | 76 → **171.0** |
-| milmmt-1b-gguf | 187.8 → **106.8 MB** | 248 → **139.0 ms** | 215 → **367.9** |
+| Config | footprint 4096 → 1024 | cold 4096 → 1024 | p50 4096 → 1024 | p95 4096 → 1024 | chars/s 4096 → 1024 |
+|---|---|---|---|---|---|
+| gemma4-e2b-gguf | 229.9 → **174.9 MB** | 725 → 547.3 ms | 317 → **198.5 ms** | 999 → 320.8 ms | 134 → **241.5** |
+| milmmt-4b-gguf | 628.3 → **219.8 MB** | 472 → 365.8 ms | 296 → **265.3 ms** | 743 → 487.0 ms | 136 → **174.9** |
+| gemma-gguf (shipping default) | 628.3 → **222.2 MB** | 448 → 337.3 ms | 770 → **330.9 ms** | 1291 → 527.2 ms | 76 → **171.0** |
+| milmmt-1b-gguf | 187.8 → **106.8 MB** | 366 → 648.1 ms* | 248 → **139.0 ms** | 438 → 235.0 ms | 215 → **367.9** |
+
+\* milmmt-1b's cold load went up rather than down; its warm reload in the same
+run was 280.6 ms, so this is a cold page cache, not a context effect.
+
+The `n_ctx = 1024` transcripts are not stored separately: they were diffed
+against the 4096 runs above and are byte-identical in all four cases, which is
+the finding. The numbers that do differ are in this table.
 
 Two consequences worth separating from the model-selection question:
 
