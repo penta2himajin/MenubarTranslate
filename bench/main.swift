@@ -42,7 +42,7 @@ let configs = buildBenchConfigMatrix(
 
 func makeEngine(for name: String, path: String) -> any TranslationEngine {
     switch name {
-    case "gemma-mlx", "hymt-1.8b-mlx", "hymt-7b-mlx":
+    case "gemma-mlx", "hymt-1.8b-mlx", "hymt-7b-mlx", "milmmt-1b-mlx":
         return MLXEngine(modelDirectory: path)
     case "gemma-gguf", "hymt-7b-gguf":
         return LlamaEngine(modelPath: path)

@@ -26,6 +26,11 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
     private let modelDirectory: String
     private var container: ModelContainer?  // nil = evicted
     private var modelType: String = ""
+    /// MiLMMT ships no chat template and nothing in `config.json` names it
+    /// (`model_type` is the generic `gemma3_text`), so the directory is the only
+    /// signal available — the MLX counterpart of the `general.basename` check
+    /// LlamaEngine makes for the same reason.
+    private var isMiLMMT: Bool { modelDirectory.lowercased().contains("milmmt") }
 
     public init(modelDirectory: String) {
         self.modelDirectory = modelDirectory
@@ -78,6 +83,13 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
             tokens = await container.encode(prompt)
             parameters = GenerateParameters(maxTokens: 512, temperature: 0.01)
             stripper = Self.stripGemma
+        case _ where isMiLMMT:
+            // Raw-prompt translation model — applyChatTemplate would throw, since
+            // Xiaomi ships no template at all.
+            tokens = await container.encode(PromptBuilder.milmmt(text: text, pair: pair))
+            // Model card: top_k=1, temperature=0.
+            parameters = GenerateParameters(maxTokens: 512, temperature: 0.0)
+            stripper = Self.stripMiLMMT
         default:
             // Every other family is a general instruct model: hand it the shared
             // translation instruction as a user message and let the model's own
@@ -146,6 +158,12 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
                         "<｜hy_begin▁of▁sentence｜>",
                     ]
                 }
+            } else if isMiLMMT {
+                // No turn marker at all: without this the model rolls straight on
+                // into a second translation block and burns the full 512 tokens.
+                await container.update { ctx in
+                    ctx.configuration.stopStrings = ["Translate this from"]
+                }
             } else {
                 // gemma4 closes a turn with <turn|>, not with its declared <eos>,
                 // so generation would otherwise run to maxTokens.
@@ -168,6 +186,16 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
         s = s.replacingOccurrences(of: "<start_of_turn>model", with: "")
         s = s.replacingOccurrences(of: "<start_of_turn>", with: "")
         s = s.replacingOccurrences(of: "<end_of_turn>", with: "")
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A raw-prompt model has no turn marker to stop at, so it can run on into a
+    /// second translation block. Cut at the next prompt header.
+    private static func stripMiLMMT(_ output: String) -> String {
+        var s = output
+        if let r = s.range(of: "Translate this from") {
+            s = String(s[..<r.lowerBound])
+        }
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
