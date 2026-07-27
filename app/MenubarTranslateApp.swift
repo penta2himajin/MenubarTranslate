@@ -12,7 +12,6 @@ import SwiftUI
 import Translation
 import MenubarTranslateCore
 import MTEngineLlama
-import MTEngineMLX
 
 // MARK: - Known gap: AppViewModel isolation
 
@@ -105,22 +104,20 @@ final class AppState {
     let capHolder: CapabilityHolder
 
     /// Mirrors mbt/main.swift engine-factory logic exactly (env vars, default paths).
-    init(engineKey: String, presetKey: String) {
+    init(presetKey: String) {
         let box = SessionBox()
         let cap = CapabilityHolder()
         self.sessionBox = box
         self.capHolder = cap
 
-        // Resolve model paths from environment; mirrors mbt/main.swift.
+        // Resolve the model path from environment; mirrors mbt/main.swift.
         let llamaPath = ProcessInfo.processInfo.environment["MBT_LLAMA_GGUF"]
-            ?? "models/weights/translategemma-4b-it-Q4_K_M.gguf"
-        let mlxDir = ProcessInfo.processInfo.environment["MBT_MLX_DIR"]
-            ?? "models/weights/translategemma-mlx"
+            ?? "models/weights/gemma-4-E2B_q4_0-it.gguf"
 
-        // Default: GGUF/llama.cpp (amended ADR 0008 — EN→JA artifact root-caused, fixed).
-        let engine: any TranslationEngine = engineKey == "mlx"
-            ? MLXEngine(modelDirectory: mlxDir)
-            : LlamaEngine(modelPath: llamaPath)
+        // One model, one runtime (ADR 0009). MLX is a development path, not a
+        // shipping one — and it cannot load Gemma 4 E2B at all — so the app target
+        // no longer links it. `mbt --engine mlx` still exists for experiments.
+        let engine: any TranslationEngine = LlamaEngine(modelPath: llamaPath)
 
         let preset: MemoryPreset = presetKey == "permissive16GB"
             ? .permissive16GB : .conservative8GB
@@ -160,9 +157,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 struct MenubarTranslateApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    // Engine and preset survive restarts. Hot-swap is intentionally out of scope
-    // (ADR 0008); a restart is required after changing either setting.
-    @AppStorage("engine") private var engineKey: String = "llama"
+    // The preset survives restarts. Hot-swap is intentionally out of scope
+    // (ADR 0009); a restart is required after changing it.
     @AppStorage("preset") private var presetKey: String = "conservative8GB"
 
     @State private var appState: AppState
@@ -170,9 +166,8 @@ struct MenubarTranslateApp: App {
     init() {
         // @AppStorage properties are not accessible before init completes, so read
         // the same UserDefaults store directly to build the initial stack.
-        let engKey = UserDefaults.standard.string(forKey: "engine") ?? "llama"
         let pstKey = UserDefaults.standard.string(forKey: "preset") ?? "conservative8GB"
-        _appState = State(wrappedValue: AppState(engineKey: engKey, presetKey: pstKey))
+        _appState = State(wrappedValue: AppState(presetKey: pstKey))
     }
 
     var body: some Scene {
@@ -181,7 +176,6 @@ struct MenubarTranslateApp: App {
                 vm: appState.vm,
                 box: appState.sessionBox,
                 cap: appState.capHolder,
-                engineKey: $engineKey,
                 presetKey: $presetKey
             )
         }
@@ -196,7 +190,6 @@ struct ContentView: View {
     let vm: AppViewModel
     let box: SessionBox
     let cap: CapabilityHolder
-    @Binding var engineKey: String
     @Binding var presetKey: String
 
     // Directional Translation session configurations — fixed for the app lifetime.
@@ -271,12 +264,10 @@ struct ContentView: View {
 
                 Spacer()
 
-                // Engine / preset settings — changes take effect after restart.
+                // Preset setting — changes take effect after restart. There is no
+                // engine picker: ADR 0009 ships one model on one runtime, and the
+                // alternative would have silently loaded a different model.
                 Menu {
-                    Picker("Engine", selection: $engineKey) {
-                        Text("llama.cpp GGUF (default)").tag("llama")
-                        Text("MLX 4-bit").tag("mlx")
-                    }
                     Picker("Memory", selection: $presetKey) {
                         Text("8 GB / conservative").tag("conservative8GB")
                         Text("16 GB / permissive").tag("permissive16GB")
@@ -290,7 +281,7 @@ struct ContentView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .frame(width: 22)
-                .help("Engine/preset changes require a restart")
+                .help("Memory-preset changes require a restart")
 
                 // _exit not exit: llama.cpp b9878 aborts in a ggml-metal static
                 // destructor at normal teardown (upstream GGML_ASSERT in

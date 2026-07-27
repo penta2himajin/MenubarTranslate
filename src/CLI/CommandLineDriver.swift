@@ -160,7 +160,7 @@ public struct CommandLineDriver {
         let env = ProcessInfo.processInfo.environment
         switch engine {
         case "llama":
-            return env["MBT_LLAMA_GGUF"] ?? "models/weights/translategemma-4b-it-Q4_K_M.gguf"
+            return env["MBT_LLAMA_GGUF"] ?? "models/weights/gemma-4-E2B_q4_0-it.gguf"
         case "mlx":
             return env["MBT_MLX_DIR"] ?? "models/weights/translategemma-mlx"
         default:

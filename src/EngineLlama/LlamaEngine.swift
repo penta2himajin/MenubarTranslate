@@ -54,13 +54,14 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
                 }
 
                 var cparams = llama_context_default_params()
-                // KV cache scales with context, and on Gemma 3 4B-class models it
-                // dominates committed memory — 628 MB of the process's
-                // phys_footprint at 4096 (docs/bench/2026-07-27-gguf-residency.md).
-                // ponytail: env-tunable so that tradeoff can be measured without a
-                // rebuild; 4096 remains the default.
+                // 1024 is the shipping context (ADR 0009): a statement about the
+                // longest input the app accepts, not a tuning constant. Prompts run
+                // ~100 tokens against a 512-token generation cap, and dropping from
+                // 4096 cut committed memory and latency with byte-identical output
+                // on every model measured (docs/bench/2026-07-27-gguf-residency.md).
+                // ponytail: env-tunable so the tradeoff stays measurable.
                 cparams.n_ctx = ProcessInfo.processInfo.environment["MBT_N_CTX"]
-                    .flatMap(UInt32.init) ?? 4096
+                    .flatMap(UInt32.init) ?? 1024
                 cparams.n_batch = 512
 
                 guard let c = llama_init_from_model(m, cparams) else {

@@ -83,7 +83,11 @@ if llamaVendored {
         .target(
             name: "MTEngineLlama",
             dependencies: ["MenubarTranslateCore", "llama"],
-            path: "src/EngineLlama"
+            path: "src/EngineLlama",
+            // ggml calls vDSP. This used to link transitively through mlx-swift;
+            // once the app target stopped depending on MTEngineMLX (ADR 0009) the
+            // symbols went missing, which means the dependency was always ours.
+            linkerSettings: [.linkedFramework("Accelerate")]
         ),
     ]
 } else {
@@ -105,8 +109,11 @@ targets += [
     // The menu-bar app shell (M3). SwiftUI + Translation-framework code lives here,
     // never in the core (ADR 0006 seam: core exposes closures, app owns the OS APIs).
     .executableTarget(
+        // No MTEngineMLX: ADR 0009 ships llama.cpp/GGUF only, so the app
+        // bundle does not link mlx-swift (which also keeps default.metallib out
+        // of the shipping path — see docs/architecture.md).
         name: "MenubarTranslateApp",
-        dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX"],
+        dependencies: ["MenubarTranslateCore", "MTEngineLlama"],
         path: "app"
     ),
 ]
