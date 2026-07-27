@@ -203,14 +203,14 @@ struct BenchSupportTests {
     }
 
     // ── (11) Config matrix: missing artifacts produce skipped entries ─────────
-    // The matrix is hard-coded to 8 configs; all yield a non-nil skippedReason when
+    // The matrix is hard-coded to 9 configs; all yield a non-nil skippedReason when
     // the existence closure always returns false.
 
-    @Test("buildBenchConfigMatrix with all missing artifacts yields 8 skipped entries")
+    @Test("buildBenchConfigMatrix with all missing artifacts yields 9 skipped entries")
     func configMatrixAllMissingSkipped() {
         let configs = buildBenchConfigMatrix(artifactExists: { _ in false })
-        #expect(configs.count == 8,
-                "matrix must contain exactly 8 configs; got \(configs.count)")
+        #expect(configs.count == 9,
+                "matrix must contain exactly 9 configs; got \(configs.count)")
         for cfg in configs {
             #expect(cfg.skippedReason != nil,
                     "config '\(cfg.name)' must be skipped when its artifact is absent")
