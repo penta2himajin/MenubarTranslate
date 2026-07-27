@@ -88,7 +88,12 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
                 tokens = try await container.perform { ctx in
                     try ctx.tokenizer.applyChatTemplate(messages: messages)
                 }
-                parameters = GenerateParameters(maxTokens: 512, temperature: 0.7, topP: 0.6)
+                switch SamplingProfile.current {
+                case .modelCard:
+                    parameters = GenerateParameters(maxTokens: 512, temperature: 0.7, topP: 0.6)
+                case .greedy:
+                    parameters = GenerateParameters(maxTokens: 512, temperature: 0.0)
+                }
                 stripper = Self.stripHunyuan
             } else {
                 // Generic fallback.
