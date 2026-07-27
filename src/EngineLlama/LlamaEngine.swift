@@ -279,7 +279,6 @@ public final class LlamaEngine: TranslationEngine {
     }
 
     public func load() async throws {
-        // STUB — implementation pending
         guard FileManager.default.fileExists(atPath: modelPath) else {
             throw TranslationEngineError.unavailable("model file not found at \(modelPath)")
         }
@@ -287,9 +286,10 @@ public final class LlamaEngine: TranslationEngine {
             "llama.cpp not vendored — run scripts/build-llama-xcframework.sh")
     }
 
+    /// Unreachable in practice: `load()` above always throws, so nothing can hold a
+    /// loaded stub. `.notLoaded` is the honest answer if a caller gets here anyway.
     public func translate(_ text: String, _ pair: LanguagePair) async throws -> String {
-        guard false else { throw TranslationEngineError.notLoaded }
-        return ""
+        throw TranslationEngineError.notLoaded
     }
 
     public func evict() async {}
