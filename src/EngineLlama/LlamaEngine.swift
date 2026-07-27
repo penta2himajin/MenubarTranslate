@@ -111,17 +111,22 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
         let arch = llamaMeta(model, key: "general.architecture") ?? ""
         let isHunyuan = arch.hasPrefix("hunyuan") || arch.contains("hunyuan")
 
+        // Get vocab pointer (b9878: tokenize/detokenize APIs take llama_vocab*).
+        let vocab = llama_model_get_vocab(model)
+
         // Build prompt via the canonical PromptBuilder in core (shared with MLXEngine).
         let prompt: String
         if isHunyuan {
-            prompt = PromptBuilder.hunyuan(text: text, pair: pair)
+            // Hy-MT2-7B and Hy-MT2-1.8B ship different tokenizers; ask the model
+            // which one it speaks instead of assuming (see HunyuanDialect).
+            let bos = llama_vocab_bos(vocab)
+            let bosText = bos < 0 ? nil : llama_vocab_get_text(vocab, bos).map { String(cString: $0) }
+            prompt = PromptBuilder.hunyuan(
+                text: text, pair: pair, dialect: HunyuanDialect(bosToken: bosText))
         } else {
             // Default: gemma3
             prompt = PromptBuilder.gemma(text: text, pair: pair)
         }
-
-        // Get vocab pointer (b9878: tokenize/detokenize APIs take llama_vocab*).
-        let vocab = llama_model_get_vocab(model)
 
         // Tokenize (add_special=true: BOS handling follows model metadata).
         var tokens = [llama_token](repeating: 0, count: prompt.utf8.count + 32)
@@ -167,14 +172,14 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
         }
         defer { llama_sampler_free(chain) }
 
-        if isHunyuan {
+        if isHunyuan, SamplingProfile.current == .modelCard {
             llama_sampler_chain_add(chain, llama_sampler_init_temp(0.7))
             llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.6, 1))
             llama_sampler_chain_add(chain, llama_sampler_init_top_k(20))
             llama_sampler_chain_add(chain, llama_sampler_init_penalties(64, 1.05, 0.0, 0.0))
             llama_sampler_chain_add(chain, llama_sampler_init_dist(0xCAFE))
         } else {
-            // Gemma3: greedy
+            // Gemma3 always; Hy-MT2 under MBT_SAMPLING=greedy.
             llama_sampler_chain_add(chain, llama_sampler_init_greedy())
         }
 

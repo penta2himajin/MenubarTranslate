@@ -36,14 +36,51 @@ public enum PromptBuilder {
         """
     }
 
-    /// Hy-MT2 wire-format prompt (no system prompt; BOS is supplied by the
-    /// tokenizer via add_special=true on llama_tokenize or applyChatTemplate).
+    /// Hy-MT2 wire-format prompt (no system prompt).
     ///
-    /// Format: <|startoftext|>{instruction}\n\n{text}<|extra_0|>
-    /// The model continues after <|extra_0|> with the translation.
-    public static func hunyuan(text: String, pair: LanguagePair) -> String {
-        "<|startoftext|>Translate the following text into \(pair.targetName). "
+    /// The instruction body is verbatim from the Hy-MT2 model card; only the
+    /// framing tokens differ between checkpoints — see `HunyuanDialect`.
+    public static func hunyuan(
+        text: String,
+        pair: LanguagePair,
+        dialect: HunyuanDialect = .startOfText
+    ) -> String {
+        let instruction = "Translate the following text into \(pair.targetName). "
             + "Note that you should only output the translated result without any additional explanation:\n\n"
-            + "\(text)<|extra_0|>"
+        switch dialect {
+        case .startOfText:
+            return "<|startoftext|>\(instruction)\(text)<|extra_0|>"
+        case .hyTurn:
+            return "<｜hy_begin▁of▁sentence｜><｜hy_User｜>\(instruction)\(text)<｜hy_Assistant｜>"
+        }
+    }
+}
+
+/// Which of the two incompatible Hy-MT2 token sets a checkpoint speaks.
+///
+/// Hy-MT2 ships the same model family under two tokenizers. Hy-MT2-7B uses the
+/// legacy Hunyuan markers (`<|startoftext|>` … `<|extra_0|>`); Hy-MT2-1.8B uses
+/// fullwidth turn markers (`<｜hy_User｜>` / `<｜hy_Assistant｜>`). Neither set
+/// appears in the other's vocabulary, so a prompt in the wrong dialect is not
+/// merely off-template — the framing tokens tokenize as ordinary text and the
+/// model sees no turn boundary at all.
+///
+/// ponytail: derived from the model's own BOS token rather than a name or size,
+/// so a new checkpoint that picks either tokenizer is classified without a
+/// hardcoded table.
+public enum HunyuanDialect: Sendable {
+    /// Hy-MT2-7B: `<|startoftext|>{instruction}{text}<|extra_0|>`
+    case startOfText
+    /// Hy-MT2-1.8B: `<｜hy_begin▁of▁sentence｜><｜hy_User｜>{…}<｜hy_Assistant｜>`
+    case hyTurn
+
+    /// Classify from the BOS token text reported by the loaded model
+    /// (`llama_vocab_get_text(vocab, llama_vocab_bos(vocab))`, or `bos_token`
+    /// in `tokenizer_config.json`).
+    ///
+    /// Unknown or missing metadata falls back to `.startOfText`, the format
+    /// that shipped and is measured in ADR 0008.
+    public init(bosToken: String?) {
+        self = bosToken?.contains("hy_begin") == true ? .hyTurn : .startOfText
     }
 }
