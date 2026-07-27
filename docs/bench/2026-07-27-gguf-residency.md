@@ -47,6 +47,32 @@ this is KV cache, not weights. Gemma 3 runs full attention across its layers at
 attention collapses it. Model size on disk turns out to be the wrong proxy for
 the memory that actually matters here.
 
+## Context size dominates both memory and speed
+
+The 4096 default was never justified by the workload — prompts here run ~100
+tokens and generation is capped at 512. Re-running every config at
+`MBT_N_CTX=1024`, with **byte-identical transcripts in all four cases**:
+
+| Config | footprint 4096 → 1024 | p50 4096 → 1024 | chars/s 4096 → 1024 |
+|---|---|---|---|
+| gemma4-e2b-gguf | 229.9 → **174.9 MB** | 317 → **198.5 ms** | 134 → **241.5** |
+| milmmt-4b-gguf | 628.3 → **219.8 MB** | 296 → **265.3 ms** | 136 → **174.9** |
+| gemma-gguf (shipping default) | 628.3 → **222.2 MB** | 770 → **330.9 ms** | 76 → **171.0** |
+| milmmt-1b-gguf | 187.8 → **106.8 MB** | 248 → **139.0 ms** | 215 → **367.9** |
+
+Two consequences worth separating from the model-selection question:
+
+**The shipping configuration was leaving 2.3× latency on the table.** Nothing
+about the model changed — TranslateGemma-4B goes from 770 ms to 331 ms p50 purely
+by sizing the context to the workload.
+
+**The KV-cache argument for Gemma 4 E2B is largely a 4096 artifact.** At 4096 it
+charged 398 MB less than the Gemma 3 4B models; at 1024 the gap is 45 MB. What
+survives the context change is the *speed* ranking, and it inverts: at 4096
+MiLMMT-4B looked faster than Gemma 4 E2B (296 vs 317 ms), at 1024 Gemma 4 E2B is
+clearly ahead (198.5 vs 265.3 ms). Gemma 4's hybrid attention benefits more from
+a smaller window than full attention does.
+
 ## Limits of this measurement
 
 - Taken on a 64 GB machine with **no memory pressure present**. That clean pages
@@ -56,7 +82,9 @@ the memory that actually matters here.
   inference. That latency penalty is unmeasured.
 - Peak RSS still competes for physical RAM against other applications even
   though it is reclaimable; 3.4 GB resident is not "free" on an 8 GB machine.
-- KV cache scales with context. The comparison holds at `n_ctx = 4096` only.
+- Both context sizes were measured; nothing here has been checked at a context
+  large enough to matter for long-document translation, which the app does not
+  currently do.
 - Single sample per config, `vmmap` taken ~3 s in rather than at peak.
 
 ## Reproducing

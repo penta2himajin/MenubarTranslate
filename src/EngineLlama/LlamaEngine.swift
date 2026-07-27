@@ -54,7 +54,13 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
                 }
 
                 var cparams = llama_context_default_params()
-                cparams.n_ctx = 4096
+                // KV cache scales with context, and on Gemma 3 4B-class models it
+                // dominates committed memory — 628 MB of the process's
+                // phys_footprint at 4096 (docs/bench/2026-07-27-gguf-residency.md).
+                // ponytail: env-tunable so that tradeoff can be measured without a
+                // rebuild; 4096 remains the default.
+                cparams.n_ctx = ProcessInfo.processInfo.environment["MBT_N_CTX"]
+                    .flatMap(UInt32.init) ?? 4096
                 cparams.n_batch = 512
 
                 guard let c = llama_init_from_model(m, cparams) else {

@@ -199,6 +199,7 @@ report += "**llama.cpp pin:** b9878 | **mlx-swift-lm:** 3.31.4\n"
 // Stamped so a transcript can never be read without knowing which decoder produced
 // it — ADR 0008 compared families under different samplers precisely because this
 // was not recorded.
+report += "**llama.cpp n_ctx:** \(ProcessInfo.processInfo.environment["MBT_N_CTX"] ?? "4096")\n"
 report += "**Hy-MT2 sampling:** \(SamplingProfile.current == .greedy ? "greedy (MBT_SAMPLING=greedy)" : "model card (temp 0.7 / top-p 0.6)")\n\n"
 report += "## Summary\n\n"
 report += BenchFormatter.markdownTable(results)
