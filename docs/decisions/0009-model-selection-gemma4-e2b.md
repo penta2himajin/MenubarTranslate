@@ -65,9 +65,12 @@ separate file and is not used.
 
 **2. llama.cpp / GGUF is the only shipping runtime.** MLX is retained as a
 development and quantization-experiment path, not a shipping candidate. Gemma 4
-E2B cannot load on MLX at all — mlx-swift-lm 3.31.4's `Gemma4Model.sanitize`
-only remaps keys prefixed `model.`, so the `language_model.*` layout fails —
-which settles the question for this model regardless of the general argument.
+E2B could not be loaded through `MLXEngine` — mlx-swift-lm 3.31.4's
+`Gemma4Model.sanitize` only remaps keys prefixed `model.`, so the
+`language_model.*` layout fails. **See the amendment below: that is a property
+of the LLM factory this engine uses, not of MLX.** The decision stands on the
+other grounds — mmap-backed load, packaging, and the runtime's own history in
+ADR 0008 — but not on impossibility.
 
 **3. `n_ctx` is 1024.** This is a statement about the longest input the app
 accepts, not a tuning constant.
@@ -139,3 +142,40 @@ capability-gated Apple Translation framework. No second set of weights ships.
   widens.
 - **QAT versus post-training quantization was not isolated.** The QAT build was
   chosen on provenance; Google publishes no E2B-specific QAT-vs-PTQ numbers.
+- **MLX was never measured for this model.** See the amendment; the comparison
+  that would settle decision 2 on evidence rather than on the ADR 0008
+  inheritance has not been run.
+
+## Amendment (2026-07-27): "cannot load on MLX" was wrong
+
+Decision 2 asserted that Gemma 4 E2B cannot load on MLX at all. That is false,
+and the error was mine: I concluded it from a single failure path without
+checking the alternative.
+
+`mlx-community/gemma-4-e2b-it-4bit` is a `Gemma4ForConditionalGeneration`
+checkpoint. `MLXEngine` loads through `LLMModelFactory` (MLXLLM), whose
+`Gemma4Model.sanitize` does not handle the `language_model.*` key layout — hence
+the `keyNotFound(per_layer_projection_norm)` failure. The **`VLMModelFactory`**
+(MLXVLM) path handles it. The sibling `polymorpha` repository runs this exact
+checkpoint on this exact mlx-swift-lm version (3.31.4) through
+`VLMModelFactory`, with two small patches against `Libraries/MLXVLM/` for
+KV-shared layers and the E2B masked embedder.
+
+So the correct statement is *"not through the factory `MLXEngine` uses"*, not
+*"not on MLX"*.
+
+This does not by itself reverse decision 2, which also rests on mmap-backed
+loading, packaging, and ADR 0008's history. But it removes the argument that
+made the decision look forced, and it leaves a real question open: MLX on this
+model was never measured. Gemma 4 E2B additionally has an MTP assistant that
+`polymorpha` measures at 155.6 tok/s steady against 111.2 baseline — a path
+GGUF does not have. Whether that survives contact with short translation
+inputs, where prefill and load dominate, is unknown; `polymorpha`'s numbers are
+generation throughput and are not comparable to this ADR's per-sentence
+latencies without re-measuring on the same 16-sentence set.
+
+Weighing against it, unchanged: MLX has no mmap equivalent (measured 4.2x worse
+cold load on MiLMMT-1B, 1546 vs 366 ms), which ADR 0003/0004's evict-and-reload
+design is built around; the MTP drafter is an additional resident model against
+an 8 GB target; and the MLX path needs an Xcode build plus two carried upstream
+patches.
