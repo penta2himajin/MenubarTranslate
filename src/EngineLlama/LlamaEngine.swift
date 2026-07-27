@@ -109,22 +109,26 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
     ) throws -> String {
         // Detect model family from metadata.
         let arch = llamaMeta(model, key: "general.architecture") ?? ""
-        let isHunyuan = arch.hasPrefix("hunyuan") || arch.contains("hunyuan")
+        let family: ModelFamily = arch.contains("hunyuan") ? .hunyuan
+            : arch.hasPrefix("gemma4") ? .gemma4
+            : .gemma
 
         // Get vocab pointer (b9878: tokenize/detokenize APIs take llama_vocab*).
         let vocab = llama_model_get_vocab(model)
 
         // Build prompt via the canonical PromptBuilder in core (shared with MLXEngine).
         let prompt: String
-        if isHunyuan {
+        switch family {
+        case .hunyuan:
             // Hy-MT2-7B and Hy-MT2-1.8B ship different tokenizers; ask the model
             // which one it speaks instead of assuming (see HunyuanDialect).
             let bos = llama_vocab_bos(vocab)
             let bosText = bos < 0 ? nil : llama_vocab_get_text(vocab, bos).map { String(cString: $0) }
             prompt = PromptBuilder.hunyuan(
                 text: text, pair: pair, dialect: HunyuanDialect(bosToken: bosText))
-        } else {
-            // Default: gemma3
+        case .gemma4:
+            prompt = PromptBuilder.gemma4(text: text, pair: pair)
+        case .gemma:
             prompt = PromptBuilder.gemma(text: text, pair: pair)
         }
 
@@ -172,7 +176,7 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
         }
         defer { llama_sampler_free(chain) }
 
-        if isHunyuan, SamplingProfile.current == .modelCard {
+        if family == .hunyuan, SamplingProfile.current == .modelCard {
             llama_sampler_chain_add(chain, llama_sampler_init_temp(0.7))
             llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.6, 1))
             llama_sampler_chain_add(chain, llama_sampler_init_top_k(20))
@@ -220,7 +224,7 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
             }
         }
 
-        return stripArtifacts(output, isHunyuan: isHunyuan)
+        return stripArtifacts(output, family: family)
     }
 
     // MARK: - Helpers
@@ -232,16 +236,21 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
         return String(cString: buf)
     }
 
-    private func stripArtifacts(_ s: String, isHunyuan: Bool) -> String {
+    private func stripArtifacts(_ s: String, family: ModelFamily) -> String {
         var out = s
-        if isHunyuan {
+        switch family {
+        case .hunyuan:
             for marker in ["<|extra_0|>", "<|startoftext|>",
                            "<｜hy_Assistant｜>", "<｜hy_place▁holder▁no▁2｜>",
                            "<｜hy_begin▁of▁sentence｜>"] {
                 out = out.replacingOccurrences(of: marker, with: "")
             }
-        } else {
-            // Gemma
+        case .gemma4:
+            if let r = out.range(of: "<turn|>") { out = String(out[..<r.lowerBound]) }
+            for marker in ["<|turn>model", "<|turn>user", "<|turn>", "<turn|>"] {
+                out = out.replacingOccurrences(of: marker, with: "")
+            }
+        case .gemma:
             if let r = out.range(of: "<end_of_turn>") { out = String(out[..<r.lowerBound]) }
             out = out.replacingOccurrences(of: "<start_of_turn>model", with: "")
             out = out.replacingOccurrences(of: "<start_of_turn>", with: "")
@@ -249,6 +258,14 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
         }
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+}
+
+/// Which prompt/stop-token convention a loaded GGUF speaks, derived from
+/// `general.architecture`.
+private enum ModelFamily {
+    case gemma      // TranslateGemma / Gemma 3: <start_of_turn> ... <end_of_turn>
+    case gemma4     // Gemma 4: <|turn>role ... <turn|>
+    case hunyuan    // Hy-MT2, either tokenizer (see HunyuanDialect)
 }
 
 // MARK: - Backend lifetime

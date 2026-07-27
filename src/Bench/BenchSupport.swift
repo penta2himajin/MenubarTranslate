@@ -149,6 +149,7 @@ public func buildBenchConfigMatrix(
         ("hymt-7b-mlx",   "models/weights/hy-mt2-7b-mlx-4bit",                "MBT_MLX_HYMT7B_DIR"),
         ("gemma-gguf",    "models/weights/translategemma-4b-it-Q4_K_M.gguf",  "MBT_LLAMA_GGUF"),
         ("hymt-7b-gguf",  "models/weights/Hy-MT2-7B-Q4_K_M.gguf",             "MBT_LLAMA_HYMT7B_GGUF"),
+        ("gemma4-e2b-gguf", "models/weights/gemma-4-E2B_q4_0-it.gguf",       "MBT_LLAMA_GEMMA4_GGUF"),
     ]
 
     var entries: [BenchConfigEntry] = []

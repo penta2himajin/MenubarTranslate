@@ -36,6 +36,33 @@ public enum PromptBuilder {
         """
     }
 
+    /// Gemma 4 chat-template prompt for a single user turn.
+    ///
+    /// Gemma 4 dropped the `<start_of_turn>` markers of Gemma 3 entirely: turns
+    /// open with `<|turn>{role}\n` and close with `<turn|>\n`. Rendered manually
+    /// on the llama.cpp path, which has no jinja engine; the MLX path goes
+    /// through the checkpoint's own `chat_template.jinja` instead.
+    ///
+    /// The `<bos>` is left to the tokenizer (`add_special = true`), and no system
+    /// turn is emitted — the template only opens one for a system message, tools,
+    /// or `enable_thinking`, none of which apply to translation.
+    public static func gemma4(text: String, pair: LanguagePair) -> String {
+        "<|turn>user\n\(instruct(text: text, pair: pair))<turn|>\n<|turn>model\n"
+    }
+
+    /// Translation instruction for a general instruct model, to be handed to the
+    /// model's own chat template as a single user message.
+    ///
+    /// Deliberately identical across model families: ADR 0008 compared families
+    /// under different prompts *and* different decoders, and untangling which
+    /// one caused a quality gap cost two sessions. Holding the instruction fixed
+    /// makes the transcripts comparable by construction.
+    public static func instruct(text: String, pair: LanguagePair) -> String {
+        "Translate the following text into \(pair.targetName). "
+            + "Note that you should only output the translated result without any additional explanation:\n\n"
+            + text
+    }
+
     /// Hy-MT2 wire-format prompt (no system prompt).
     ///
     /// The instruction body is verbatim from the Hy-MT2 model card; only the

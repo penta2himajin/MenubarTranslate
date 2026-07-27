@@ -14,6 +14,21 @@ struct PromptBuilderTests {
         #expect(p.hasSuffix("<start_of_turn>model\n"))
     }
 
+    /// Gemma 4 replaced the `<start_of_turn>` markers wholesale. Same regression
+    /// as `gemmaPromptEndsModelTurnWithNewline`: the template emits
+    /// `'<|turn>' + role + '\n'`, so the model turn must open with a newline.
+    @Test func gemma4PromptOpensTheModelTurnWithNewline() {
+        let p = PromptBuilder.gemma4(text: "hello", pair: .enToJa)
+        #expect(p.hasPrefix("<|turn>user\n"))
+        #expect(p.hasSuffix("<turn|>\n<|turn>model\n"))
+        #expect(p.contains("Japanese"))
+        // Gemma 3 markers are gone from this family — none must leak in.
+        #expect(!p.contains("<start_of_turn>"))
+        #expect(!p.contains("<end_of_turn>"))
+        // <bos> comes from the tokenizer (add_special), never from the string.
+        #expect(!p.contains("<bos>"))
+    }
+
     // MARK: - Hy-MT2 dialects
     //
     // The family ships two mutually incompatible token sets: Hy-MT2-7B uses the
