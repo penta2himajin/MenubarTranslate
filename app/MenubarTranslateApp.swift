@@ -7,51 +7,110 @@
 
 import AppKit
 import Darwin
+import Synchronization
 import SwiftUI
 import Translation
 import MenubarTranslateCore
 import MTEngineLlama
 import MTEngineMLX
 
-// MARK: - Swift 6 concurrency shims
+// MARK: - Known gap: AppViewModel isolation
 
-// AppViewModel is @Observable and effectively main-actor–only in the app layer.
-// @unchecked Sendable suppresses Swift 6 region-isolation diagnostics for calls
-// from @MainActor tasks; caller guarantees main-actor access throughout.
-// ponytail: @unchecked — main-actor invariant enforced by all call sites in this file
+// AppViewModel is @Observable and read by SwiftUI on the main actor, but its
+// `translate()`/`tick()` are nonisolated async, so they mutate `output`/`isBusy`/
+// `snapshot` off the main actor. That is a real race, and this conformance is what
+// silences it — it is a suppression, not a proof of safety.
+//
+// The fix is @MainActor on AppViewModel itself (in the core), which also forces
+// AppRuntime.onChange to hop actors. That changes snapshot propagation from
+// synchronous to async and breaks the write-locked
+// tests/AppViewModelTests.swift:snapshotMirrorsRuntime, so it needs its own change
+// with the test contract renegotiated — not a drive-by edit here.
+// ponytail: known-unsafe, scoped and documented; see the note above for the real fix.
 extension AppViewModel: @unchecked Sendable {}
 
-// TranslationSession is received from a .translationTask closure that is implicitly
-// @MainActor; calling its async methods triggers region-isolation errors without this.
-// ponytail: @unchecked — session is used only within the main-actor translationTask closure
-extension TranslationSession: @unchecked @retroactive Sendable {}
+// MARK: - Shared state crossing the OSTranslationEngine seam
 
-// MARK: - Shared reference boxes
+/// Mutable capability state feeding the ADR 0006 gate.
+///
+/// This genuinely crosses isolation: it is written on the main actor (`probeCapability`)
+/// and read from `OSTranslationEngine`'s `availability` closure, which is a *synchronous*
+/// `@Sendable` closure invoked from `load()`/`translate()` — both non-isolated `async`,
+/// so they run on the cooperative pool, not the main actor. A synchronous closure cannot
+/// hop actors, so the state needs real mutual exclusion rather than an assumption.
+final class CapabilityHolder: Sendable {
+    private struct State {
+        var capability = FallbackCapability(
+            apiPresent: false, pairSupported: false, modelDownloaded: false
+        )
+        /// Guards the one-shot prepareTranslation() call from the translationTask closure.
+        var didPrepare = false
+    }
 
-/// Mutable capability state — written on the main actor, read from @Sendable closures.
-/// @unchecked Sendable: all callers enforce main-actor access; nonisolated(unsafe)
-/// silences the static checker where main-actor use is obvious.
-final class CapabilityHolder: @unchecked Sendable {
-    // ponytail: nonisolated(unsafe) — main-actor-only access enforced by callers
-    nonisolated(unsafe) var value = FallbackCapability(
-        apiPresent: false, pairSupported: false, modelDownloaded: false
-    )
-    // Guards the one-shot prepareTranslation() call from the translationTask closure.
-    nonisolated(unsafe) var didPrepare = false
+    private let state = Mutex(State())
+
+    var value: FallbackCapability {
+        get { state.withLock { $0.capability } }
+        set { state.withLock { $0.capability = newValue } }
+    }
+
+    /// Claim the one-shot prepare slot. Returns true exactly once per launch.
+    func claimPrepare() -> Bool {
+        state.withLock {
+            if $0.didPrepare { return false }
+            $0.didPrepare = true
+            return true
+        }
+    }
 }
 
-/// Directional Translation-framework sessions.
-/// Valid only while the respective .translationTask closure is alive.
-/// @unchecked Sendable: main-actor-only access enforced by callers.
-final class SessionBox: @unchecked Sendable {
-    // ponytail: nonisolated(unsafe) — main-actor-only access enforced by callers
-    nonisolated(unsafe) var jaEnSession: TranslationSession?
-    nonisolated(unsafe) var enJaSession: TranslationSession?
+/// Directional Translation-framework sessions, valid only while the respective
+/// `.translationTask` closure is alive.
+///
+/// `@MainActor` (hence implicitly Sendable): `TranslationSession` is not Sendable and
+/// Apple does not document it as safe off the main actor, so sessions never leave it —
+/// the translator closure hops here via `translateOnMainActor` instead of carrying the
+/// session across. This is what removes the `@retroactive Sendable` conformance that
+/// previously papered over the same crossing.
+@MainActor
+final class SessionBox {
+    var jaEnSession: TranslationSession?
+    var enJaSession: TranslationSession?
+}
+
+/// `TranslationSession` is non-Sendable, yet its `translate`/`prepareTranslation` are
+/// nonisolated `async` — so the framework itself requires the session to leave the
+/// caller's actor, and there is no Sendable-clean way to call it.
+///
+/// This box is the one place that crossing is admitted. It replaces a blanket
+/// `extension TranslationSession: @unchecked @retroactive Sendable`, which blessed
+/// *every* use of the SDK type and would hard-break the build if Apple ever added its
+/// own conformance. Scoping it to a wrapper keeps the unsafety visible and local.
+///
+/// ponytail: `@unchecked` forced by the SDK's API shape; delete it if `TranslationSession`
+/// ever becomes Sendable.
+private struct SendableSession: @unchecked Sendable {
+    let session: TranslationSession
+}
+
+/// Look the session up on the main actor (where it is stored), then call it.
+@MainActor
+private func translateOnMainActor(
+    _ text: String, _ pair: LanguagePair, box: SessionBox
+) async throws -> String {
+    let stored = pair.sourceCode == "ja" ? box.jaEnSession : box.enJaSession
+    guard let stored else {
+        throw TranslationEngineError.unavailable(
+            "OS Translation session not ready (pair: \(pair.token))")
+    }
+    return try await SendableSession(session: stored).session.translate(text).targetText
 }
 
 // MARK: - App state (translation stack)
 
 /// Owns the entire translation stack so it survives App struct rebuilds via @State.
+/// `@MainActor` — it holds `AppViewModel` (non-Sendable, UI-bound) and `SessionBox`.
+@MainActor
 final class AppState {
     let vm: AppViewModel
     let sessionBox: SessionBox
@@ -84,13 +143,7 @@ final class AppState {
         let osEngine = OSTranslationEngine(
             availability: { cap.value },
             translator: { text, pair in
-                let session = pair.sourceCode == "ja" ? box.jaEnSession : box.enJaSession
-                guard let session else {
-                    throw TranslationEngineError.unavailable(
-                        "OS Translation session not ready (pair: \(pair.token))")
-                }
-                let result = try await session.translate(text)
-                return result.targetText
+                try await translateOnMainActor(text, pair, box: box)
             }
         )
 
@@ -283,10 +336,9 @@ struct ContentView: View {
         .translationTask(jaEnConfig) { session in
             box.jaEnSession = session
             await probeCapability()
-            if !cap.didPrepare && cap.value.pairSupported && !cap.value.modelDownloaded
-                    && vm.snapshot.pressure == .normal {
-                cap.didPrepare = true
-                try? await session.prepareTranslation()
+            if cap.value.pairSupported, !cap.value.modelDownloaded,
+               vm.snapshot.pressure == .normal, cap.claimPrepare() {
+                try? await SendableSession(session: session).session.prepareTranslation()
             }
             try? await Task.sleep(nanoseconds: .max)
             box.jaEnSession = nil
