@@ -41,9 +41,8 @@ public struct CommandLineDriver {
 
     /// Run the CLI with optional engine factories for dependency injection (e.g. in tests).
     /// Each factory receives the model path/directory string and returns an engine instance.
-    /// STUB — implementation pending: factories are not yet wired into the engine-selection
-    /// path; this overload exists so tests referencing the injection point compile and
-    /// can assert on the intended (Wave 1) behaviour.
+    /// An engine absent from the map falls through to the factory-less overload, which
+    /// serves `--engine fake` and rejects anything else with exit 3.
     public func run(
         _ args: [String],
         stdin: String?,
