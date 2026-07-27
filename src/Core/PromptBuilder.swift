@@ -36,6 +36,23 @@ public enum PromptBuilder {
         """
     }
 
+    /// MiLMMT-46 prompt, verbatim from the Xiaomi model card.
+    ///
+    /// MiLMMT is a translation fine-tune of Gemma 3, so its GGUF reports
+    /// `general.architecture = "gemma3"` — but it ships **no chat template** and
+    /// is prompted raw, in a format that has nothing to do with TranslateGemma's
+    /// `<start_of_turn>` turns. Architecture alone cannot tell the two apart.
+    ///
+    /// The trailing `"\(pair.targetName):"` with no newline is the continuation
+    /// point: the model writes the translation immediately after the colon.
+    public static func milmmt(text: String, pair: LanguagePair) -> String {
+        """
+        Translate this from \(pair.sourceName) to \(pair.targetName):
+        \(pair.sourceName): \(text)
+        \(pair.targetName):
+        """
+    }
+
     /// Gemma 4 chat-template prompt for a single user turn.
     ///
     /// Gemma 4 dropped the `<start_of_turn>` markers of Gemma 3 entirely: turns

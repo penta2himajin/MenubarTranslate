@@ -109,7 +109,13 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
     ) throws -> String {
         // Detect model family from metadata.
         let arch = llamaMeta(model, key: "general.architecture") ?? ""
-        let family: ModelFamily = arch.contains("hunyuan") ? .hunyuan
+        // MiLMMT is a Gemma 3 fine-tune, so it reports architecture "gemma3" while
+        // using a completely different, template-free prompt. Architecture cannot
+        // separate it from TranslateGemma — the name can.
+        let name = llamaMeta(model, key: "general.basename")
+            ?? llamaMeta(model, key: "general.name") ?? ""
+        let family: ModelFamily = name.lowercased().contains("milmmt") ? .milmmt
+            : arch.contains("hunyuan") ? .hunyuan
             : arch.hasPrefix("gemma4") ? .gemma4
             : .gemma
 
@@ -128,6 +134,8 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
                 text: text, pair: pair, dialect: HunyuanDialect(bosToken: bosText))
         case .gemma4:
             prompt = PromptBuilder.gemma4(text: text, pair: pair)
+        case .milmmt:
+            prompt = PromptBuilder.milmmt(text: text, pair: pair)
         case .gemma:
             prompt = PromptBuilder.gemma(text: text, pair: pair)
         }
@@ -250,6 +258,12 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
             for marker in ["<|turn>model", "<|turn>user", "<|turn>", "<turn|>"] {
                 out = out.replacingOccurrences(of: marker, with: "")
             }
+        case .milmmt:
+            // Raw-prompt model: it can run on into a second translation block.
+            // Cut at the first one rather than shipping the continuation.
+            if let r = out.range(of: "Translate this from") {
+                out = String(out[..<r.lowerBound])
+            }
         case .gemma:
             if let r = out.range(of: "<end_of_turn>") { out = String(out[..<r.lowerBound]) }
             out = out.replacingOccurrences(of: "<start_of_turn>model", with: "")
@@ -266,6 +280,7 @@ private enum ModelFamily {
     case gemma      // TranslateGemma / Gemma 3: <start_of_turn> ... <end_of_turn>
     case gemma4     // Gemma 4: <|turn>role ... <turn|>
     case hunyuan    // Hy-MT2, either tokenizer (see HunyuanDialect)
+    case milmmt     // MiLMMT-46: no chat template, raw "Translate this from ..." 
 }
 
 // MARK: - Backend lifetime
