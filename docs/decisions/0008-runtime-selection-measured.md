@@ -1,7 +1,9 @@
 # ADR 0008 — Runtime selection: TranslateGemma-4B on MLX 4-bit (measured)
 
-- Status: Accepted, amended 2026-07-07 — **default runtime is GGUF/llama.cpp**
-  (see Amendment below)
+- Status: Superseded by ADR 0009 (2026-07-27) — both the model and the runtime
+  choice are replaced. The amendment below (GGUF default, prompt root-cause) is
+  upheld and carried forward; the measurements remain valid for the models and
+  decoders they cover, with the caveats ADR 0009 records.
 - Date: 2026-07-06
 - Supersedes: ADR 0001
 

@@ -11,16 +11,21 @@ with more permissive residency.
 
 ## Inference core
 
-TranslateGemma-4B, GGUF `Q4_K_M` (~2.5 GB disk, ~3–3.5 GB resident), on a
-llama.cpp / Metal runtime (ADR 0001). The model is Dense, which shapes the whole
+Gemma 4 E2B, GGUF `q4_0` from Google's QAT build (~3.35 GB disk), on a
+llama.cpp / Metal runtime (ADR 0009). The model is Dense, which shapes the whole
 memory strategy.
+
+Weights are mapped file-backed, so what the OS charges against the process is
+not the weights but the KV cache: 174.9 MB of `phys_footprint` at `n_ctx = 1024`,
+alongside ~3.1 GB of clean, reclaimable pages
+(`docs/bench/2026-07-27-gguf-residency.md`).
 
 ## Memory strategy
 
 Because the model is Dense, per-token weight streaming is bandwidth-bound and is not
 used (ADR 0002). Instead the process stays alive and only **weights** are evicted and
 reloaded — *weight-level residency* — amortising Metal/runtime init. A cold reload of
-~2.5 GB is ~0.5 s.
+~3.35 GB is ~0.55 s.
 
 Residency is managed by live signals, not by installed-RAM buckets (ADR 0003): RAM
 tier only sets an initial preset; actual eviction is driven by **idle timeout ∨
@@ -58,8 +63,9 @@ binding, and the `MenubarTranslateApp` target (`app/`, macOS 15) owns everything
 OS-facing: the `MenuBarExtra` shell, a 1 s tick loop driving idle-timeout, and the
 Translation-framework wiring — `LanguageAvailability` probes feed the ADR 0006
 capability gate, and live `TranslationSession`s are handed to the core through
-`OSTranslationEngine`'s closure seams. Default runtime is llama.cpp/GGUF (ADR 0008);
-MLX is the alternate.
+`OSTranslationEngine`'s closure seams. The shipping runtime is llama.cpp/GGUF
+and the model is Gemma 4 E2B (ADR 0009); MLX is retained for development and
+quantization experiments, not as a shipping path.
 
 ## Known upstream issues
 
