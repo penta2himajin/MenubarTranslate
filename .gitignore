@@ -21,3 +21,6 @@ vendor/
 # Agent-harness scratch (devloop/GLM)
 .devloop/
 .claude-glm-task.md
+
+# Metal shader library — ggml embeds its own; a stray copy here is dead weight
+default.metallib
