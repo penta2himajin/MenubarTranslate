@@ -9,14 +9,27 @@
 
 ## ステータス
 
-設計初期段階。実装はまだ無い。現時点では作業規約
-（[`penta2himajin/templates`](https://github.com/penta2himajin/templates) から採用）と
-`docs/` 以下の設計記録のみを収める。
+動作する。常駐/翻訳コア、2 つの推論エンジン（llama.cpp GGUF と MLX）、`mbt`
+コンソールツール、SwiftUI メニューバーアプリまで実装済みで、テストで保護されている。
+
+```bash
+swift build
+swift test
+swift run mbt --dir ja-en "こんにちは"          # コンソール
+swift run MenubarTranslateApp                  # メニューバーアプリ
+```
+
+実エンジンにはローカルの重み（`MBT_LLAMA_GGUF` / `MBT_MLX_DIR`）が要る。
+`--engine llama` には `./scripts/build-llama-xcframework.sh` を一度実行する。
+どちらも無い場合でも `--engine fake` で常駐パス全体は動き、重みに依存する
+テストは失敗ではなくスキップされる。
 
 ## 設計概要
 
 - **モデル**: TranslateGemma-4B, GGUF `Q4_K_M`（ディスク約 2.5 GB、実行時レジデント
-  約 3〜3.5 GB）。llama.cpp / Metal ランタイム上で実行。→ `docs/decisions/0001-model-selection.md`
+  約 3〜3.5 GB）。llama.cpp / Metal ランタイム上で実行 — 計測に基づく既定。MLX 4-bit は
+  代替（`--engine mlx`）。→ `docs/decisions/0008-runtime-selection-measured.md`
+  （ADR 0001 を supersede）
 - **メモリ目標**: まず 8 GB 統合メモリ。16 GB 以上はより緩い常駐を許容。
 - **常駐**: プロセスは生かしたまま、モデルの weight だけを退避・再ロードする
   「重みレベル常駐」。Metal/ランタイム初期化を償却する。コールド再ロードは約 0.5 秒。
