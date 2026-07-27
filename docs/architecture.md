@@ -61,6 +61,25 @@ capability gate, and live `TranslationSession`s are handed to the core through
 `OSTranslationEngine`'s closure seams. Default runtime is llama.cpp/GGUF (ADR 0008);
 MLX is the alternate.
 
+## Known upstream issues
+
+**llama.cpp b9878 aborts at process teardown.** A `ggml-metal` static destructor
+trips `GGML_ASSERT([rsets->data count] == 0)` (`ggml-metal-device.m:622`) after a
+successful run, turning a clean exit into signal 6 / exit code 134. It fires after
+all work has completed, so results are unaffected — but it corrupts the exit status,
+which matters for scripting and CI.
+
+Both entry points therefore end with `_exit(0)` rather than `exit(0)`, skipping
+`atexit` handlers and static destructors (`mbt/main.swift`, and the Quit / restart
+buttons in `app/MenubarTranslateApp.swift`). This is safe because all output goes
+through unbuffered `FileHandle` writes, so there is nothing to flush.
+
+`swift test` has no such escape hatch: the assert fires in the test harness after
+the suite reports, so a fully green run can still surface as `exited with unexpected
+signal code 6`. **Read the `Test run with N tests ... passed` line, not the process
+exit status.** Re-check this when the pin in `scripts/build-llama-xcframework.sh`
+moves; the workarounds can go once upstream fixes the destructor.
+
 ## Open questions
 
 Several choices rest on measurements not yet done on real hardware. See
