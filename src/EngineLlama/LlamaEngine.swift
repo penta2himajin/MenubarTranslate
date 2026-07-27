@@ -54,7 +54,14 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
                 }
 
                 var cparams = llama_context_default_params()
-                cparams.n_ctx = 4096
+                // 1024 is the shipping context (ADR 0009): a statement about the
+                // longest input the app accepts, not a tuning constant. Prompts run
+                // ~100 tokens against a 512-token generation cap, and dropping from
+                // 4096 cut committed memory and latency with byte-identical output
+                // on every model measured (docs/bench/2026-07-27-gguf-residency.md).
+                // ponytail: env-tunable so the tradeoff stays measurable.
+                cparams.n_ctx = ProcessInfo.processInfo.environment["MBT_N_CTX"]
+                    .flatMap(UInt32.init) ?? 1024
                 cparams.n_batch = 512
 
                 guard let c = llama_init_from_model(m, cparams) else {
@@ -109,19 +116,36 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
     ) throws -> String {
         // Detect model family from metadata.
         let arch = llamaMeta(model, key: "general.architecture") ?? ""
-        let isHunyuan = arch.hasPrefix("hunyuan") || arch.contains("hunyuan")
-
-        // Build prompt via the canonical PromptBuilder in core (shared with MLXEngine).
-        let prompt: String
-        if isHunyuan {
-            prompt = PromptBuilder.hunyuan(text: text, pair: pair)
-        } else {
-            // Default: gemma3
-            prompt = PromptBuilder.gemma(text: text, pair: pair)
-        }
+        // MiLMMT is a Gemma 3 fine-tune, so it reports architecture "gemma3" while
+        // using a completely different, template-free prompt. Architecture cannot
+        // separate it from TranslateGemma — the name can.
+        let name = llamaMeta(model, key: "general.basename")
+            ?? llamaMeta(model, key: "general.name") ?? ""
+        let family: ModelFamily = name.lowercased().contains("milmmt") ? .milmmt
+            : arch.contains("hunyuan") ? .hunyuan
+            : arch.hasPrefix("gemma4") ? .gemma4
+            : .gemma
 
         // Get vocab pointer (b9878: tokenize/detokenize APIs take llama_vocab*).
         let vocab = llama_model_get_vocab(model)
+
+        // Build prompt via the canonical PromptBuilder in core (shared with MLXEngine).
+        let prompt: String
+        switch family {
+        case .hunyuan:
+            // Hy-MT2-7B and Hy-MT2-1.8B ship different tokenizers; ask the model
+            // which one it speaks instead of assuming (see HunyuanDialect).
+            let bos = llama_vocab_bos(vocab)
+            let bosText = bos < 0 ? nil : llama_vocab_get_text(vocab, bos).map { String(cString: $0) }
+            prompt = PromptBuilder.hunyuan(
+                text: text, pair: pair, dialect: HunyuanDialect(bosToken: bosText))
+        case .gemma4:
+            prompt = PromptBuilder.gemma4(text: text, pair: pair)
+        case .milmmt:
+            prompt = PromptBuilder.milmmt(text: text, pair: pair)
+        case .gemma:
+            prompt = PromptBuilder.gemma(text: text, pair: pair)
+        }
 
         // Tokenize (add_special=true: BOS handling follows model metadata).
         var tokens = [llama_token](repeating: 0, count: prompt.utf8.count + 32)
@@ -167,14 +191,14 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
         }
         defer { llama_sampler_free(chain) }
 
-        if isHunyuan {
+        if family == .hunyuan, SamplingProfile.current == .modelCard {
             llama_sampler_chain_add(chain, llama_sampler_init_temp(0.7))
             llama_sampler_chain_add(chain, llama_sampler_init_top_p(0.6, 1))
             llama_sampler_chain_add(chain, llama_sampler_init_top_k(20))
             llama_sampler_chain_add(chain, llama_sampler_init_penalties(64, 1.05, 0.0, 0.0))
             llama_sampler_chain_add(chain, llama_sampler_init_dist(0xCAFE))
         } else {
-            // Gemma3: greedy
+            // Gemma3 always; Hy-MT2 under MBT_SAMPLING=greedy.
             llama_sampler_chain_add(chain, llama_sampler_init_greedy())
         }
 
@@ -215,7 +239,7 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
             }
         }
 
-        return stripArtifacts(output, isHunyuan: isHunyuan)
+        return stripArtifacts(output, family: family)
     }
 
     // MARK: - Helpers
@@ -227,16 +251,27 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
         return String(cString: buf)
     }
 
-    private func stripArtifacts(_ s: String, isHunyuan: Bool) -> String {
+    private func stripArtifacts(_ s: String, family: ModelFamily) -> String {
         var out = s
-        if isHunyuan {
+        switch family {
+        case .hunyuan:
             for marker in ["<|extra_0|>", "<|startoftext|>",
                            "<｜hy_Assistant｜>", "<｜hy_place▁holder▁no▁2｜>",
                            "<｜hy_begin▁of▁sentence｜>"] {
                 out = out.replacingOccurrences(of: marker, with: "")
             }
-        } else {
-            // Gemma
+        case .gemma4:
+            if let r = out.range(of: "<turn|>") { out = String(out[..<r.lowerBound]) }
+            for marker in ["<|turn>model", "<|turn>user", "<|turn>", "<turn|>"] {
+                out = out.replacingOccurrences(of: marker, with: "")
+            }
+        case .milmmt:
+            // Raw-prompt model: it can run on into a second translation block.
+            // Cut at the first one rather than shipping the continuation.
+            if let r = out.range(of: "Translate this from") {
+                out = String(out[..<r.lowerBound])
+            }
+        case .gemma:
             if let r = out.range(of: "<end_of_turn>") { out = String(out[..<r.lowerBound]) }
             out = out.replacingOccurrences(of: "<start_of_turn>model", with: "")
             out = out.replacingOccurrences(of: "<start_of_turn>", with: "")
@@ -244,6 +279,15 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
         }
         return out.trimmingCharacters(in: .whitespacesAndNewlines)
     }
+}
+
+/// Which prompt/stop-token convention a loaded GGUF speaks, derived from
+/// `general.architecture`.
+private enum ModelFamily {
+    case gemma      // TranslateGemma / Gemma 3: <start_of_turn> ... <end_of_turn>
+    case gemma4     // Gemma 4: <|turn>role ... <turn|>
+    case hunyuan    // Hy-MT2, either tokenizer (see HunyuanDialect)
+    case milmmt     // MiLMMT-46: no chat template, raw "Translate this from ..." 
 }
 
 // MARK: - Backend lifetime
@@ -279,7 +323,6 @@ public final class LlamaEngine: TranslationEngine {
     }
 
     public func load() async throws {
-        // STUB — implementation pending
         guard FileManager.default.fileExists(atPath: modelPath) else {
             throw TranslationEngineError.unavailable("model file not found at \(modelPath)")
         }
@@ -287,9 +330,10 @@ public final class LlamaEngine: TranslationEngine {
             "llama.cpp not vendored — run scripts/build-llama-xcframework.sh")
     }
 
+    /// Unreachable in practice: `load()` above always throws, so nothing can hold a
+    /// loaded stub. `.notLoaded` is the honest answer if a caller gets here anyway.
     public func translate(_ text: String, _ pair: LanguagePair) async throws -> String {
-        guard false else { throw TranslationEngineError.notLoaded }
-        return ""
+        throw TranslationEngineError.notLoaded
     }
 
     public func evict() async {}

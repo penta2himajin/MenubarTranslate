@@ -7,73 +7,117 @@
 
 import AppKit
 import Darwin
+import Synchronization
 import SwiftUI
 import Translation
 import MenubarTranslateCore
 import MTEngineLlama
-import MTEngineMLX
 
-// MARK: - Swift 6 concurrency shims
+// MARK: - Known gap: AppViewModel isolation
 
-// AppViewModel is @Observable and effectively main-actor–only in the app layer.
-// @unchecked Sendable suppresses Swift 6 region-isolation diagnostics for calls
-// from @MainActor tasks; caller guarantees main-actor access throughout.
-// ponytail: @unchecked — main-actor invariant enforced by all call sites in this file
-extension AppViewModel: @unchecked Sendable {}
 
-// TranslationSession is received from a .translationTask closure that is implicitly
-// @MainActor; calling its async methods triggers region-isolation errors without this.
-// ponytail: @unchecked — session is used only within the main-actor translationTask closure
-extension TranslationSession: @unchecked @retroactive Sendable {}
+// MARK: - Shared state crossing the OSTranslationEngine seam
 
-// MARK: - Shared reference boxes
+/// Mutable capability state feeding the ADR 0006 gate.
+///
+/// This genuinely crosses isolation: it is written on the main actor (`probeCapability`)
+/// and read from `OSTranslationEngine`'s `availability` closure, which is a *synchronous*
+/// `@Sendable` closure invoked from `load()`/`translate()` — both non-isolated `async`,
+/// so they run on the cooperative pool, not the main actor. A synchronous closure cannot
+/// hop actors, so the state needs real mutual exclusion rather than an assumption.
+final class CapabilityHolder: Sendable {
+    private struct State {
+        var capability = FallbackCapability(
+            apiPresent: false, pairSupported: false, modelDownloaded: false
+        )
+        /// Guards the one-shot prepareTranslation() call from the translationTask closure.
+        var didPrepare = false
+    }
 
-/// Mutable capability state — written on the main actor, read from @Sendable closures.
-/// @unchecked Sendable: all callers enforce main-actor access; nonisolated(unsafe)
-/// silences the static checker where main-actor use is obvious.
-final class CapabilityHolder: @unchecked Sendable {
-    // ponytail: nonisolated(unsafe) — main-actor-only access enforced by callers
-    nonisolated(unsafe) var value = FallbackCapability(
-        apiPresent: false, pairSupported: false, modelDownloaded: false
-    )
-    // Guards the one-shot prepareTranslation() call from the translationTask closure.
-    nonisolated(unsafe) var didPrepare = false
+    private let state = Mutex(State())
+
+    var value: FallbackCapability {
+        get { state.withLock { $0.capability } }
+        set { state.withLock { $0.capability = newValue } }
+    }
+
+    /// Claim the one-shot prepare slot. Returns true exactly once per launch.
+    func claimPrepare() -> Bool {
+        state.withLock {
+            if $0.didPrepare { return false }
+            $0.didPrepare = true
+            return true
+        }
+    }
 }
 
-/// Directional Translation-framework sessions.
-/// Valid only while the respective .translationTask closure is alive.
-/// @unchecked Sendable: main-actor-only access enforced by callers.
-final class SessionBox: @unchecked Sendable {
-    // ponytail: nonisolated(unsafe) — main-actor-only access enforced by callers
-    nonisolated(unsafe) var jaEnSession: TranslationSession?
-    nonisolated(unsafe) var enJaSession: TranslationSession?
+/// Directional Translation-framework sessions, valid only while the respective
+/// `.translationTask` closure is alive.
+///
+/// `@MainActor` (hence implicitly Sendable): `TranslationSession` is not Sendable and
+/// Apple does not document it as safe off the main actor, so sessions never leave it —
+/// the translator closure hops here via `translateOnMainActor` instead of carrying the
+/// session across. This is what removes the `@retroactive Sendable` conformance that
+/// previously papered over the same crossing.
+@MainActor
+final class SessionBox {
+    var jaEnSession: TranslationSession?
+    var enJaSession: TranslationSession?
+}
+
+/// `TranslationSession` is non-Sendable, yet its `translate`/`prepareTranslation` are
+/// nonisolated `async` — so the framework itself requires the session to leave the
+/// caller's actor, and there is no Sendable-clean way to call it.
+///
+/// This box is the one place that crossing is admitted. It replaces a blanket
+/// `extension TranslationSession: @unchecked @retroactive Sendable`, which blessed
+/// *every* use of the SDK type and would hard-break the build if Apple ever added its
+/// own conformance. Scoping it to a wrapper keeps the unsafety visible and local.
+///
+/// ponytail: `@unchecked` forced by the SDK's API shape; delete it if `TranslationSession`
+/// ever becomes Sendable.
+private struct SendableSession: @unchecked Sendable {
+    let session: TranslationSession
+}
+
+/// Look the session up on the main actor (where it is stored), then call it.
+@MainActor
+private func translateOnMainActor(
+    _ text: String, _ pair: LanguagePair, box: SessionBox
+) async throws -> String {
+    let stored = pair.sourceCode == "ja" ? box.jaEnSession : box.enJaSession
+    guard let stored else {
+        throw TranslationEngineError.unavailable(
+            "OS Translation session not ready (pair: \(pair.token))")
+    }
+    return try await SendableSession(session: stored).session.translate(text).targetText
 }
 
 // MARK: - App state (translation stack)
 
 /// Owns the entire translation stack so it survives App struct rebuilds via @State.
+/// `@MainActor` — it holds `AppViewModel` (non-Sendable, UI-bound) and `SessionBox`.
+@MainActor
 final class AppState {
     let vm: AppViewModel
     let sessionBox: SessionBox
     let capHolder: CapabilityHolder
 
     /// Mirrors mbt/main.swift engine-factory logic exactly (env vars, default paths).
-    init(engineKey: String, presetKey: String) {
+    init(presetKey: String) {
         let box = SessionBox()
         let cap = CapabilityHolder()
         self.sessionBox = box
         self.capHolder = cap
 
-        // Resolve model paths from environment; mirrors mbt/main.swift.
+        // Resolve the model path from environment; mirrors mbt/main.swift.
         let llamaPath = ProcessInfo.processInfo.environment["MBT_LLAMA_GGUF"]
-            ?? "models/weights/translategemma-4b-it-Q4_K_M.gguf"
-        let mlxDir = ProcessInfo.processInfo.environment["MBT_MLX_DIR"]
-            ?? "models/weights/translategemma-mlx"
+            ?? "models/weights/gemma-4-E2B_q4_0-it.gguf"
 
-        // Default: GGUF/llama.cpp (amended ADR 0008 — EN→JA artifact root-caused, fixed).
-        let engine: any TranslationEngine = engineKey == "mlx"
-            ? MLXEngine(modelDirectory: mlxDir)
-            : LlamaEngine(modelPath: llamaPath)
+        // One model, one runtime (ADR 0009). MLX is a development path, not a
+        // shipping one — and it cannot load Gemma 4 E2B at all — so the app target
+        // no longer links it. `mbt --engine mlx` still exists for experiments.
+        let engine: any TranslationEngine = LlamaEngine(modelPath: llamaPath)
 
         let preset: MemoryPreset = presetKey == "permissive16GB"
             ? .permissive16GB : .conservative8GB
@@ -84,13 +128,7 @@ final class AppState {
         let osEngine = OSTranslationEngine(
             availability: { cap.value },
             translator: { text, pair in
-                let session = pair.sourceCode == "ja" ? box.jaEnSession : box.enJaSession
-                guard let session else {
-                    throw TranslationEngineError.unavailable(
-                        "OS Translation session not ready (pair: \(pair.token))")
-                }
-                let result = try await session.translate(text)
-                return result.targetText
+                try await translateOnMainActor(text, pair, box: box)
             }
         )
 
@@ -119,9 +157,8 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 struct MenubarTranslateApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    // Engine and preset survive restarts. Hot-swap is intentionally out of scope
-    // (ADR 0008); a restart is required after changing either setting.
-    @AppStorage("engine") private var engineKey: String = "llama"
+    // The preset survives restarts. Hot-swap is intentionally out of scope
+    // (ADR 0009); a restart is required after changing it.
     @AppStorage("preset") private var presetKey: String = "conservative8GB"
 
     @State private var appState: AppState
@@ -129,9 +166,8 @@ struct MenubarTranslateApp: App {
     init() {
         // @AppStorage properties are not accessible before init completes, so read
         // the same UserDefaults store directly to build the initial stack.
-        let engKey = UserDefaults.standard.string(forKey: "engine") ?? "llama"
         let pstKey = UserDefaults.standard.string(forKey: "preset") ?? "conservative8GB"
-        _appState = State(wrappedValue: AppState(engineKey: engKey, presetKey: pstKey))
+        _appState = State(wrappedValue: AppState(presetKey: pstKey))
     }
 
     var body: some Scene {
@@ -140,7 +176,6 @@ struct MenubarTranslateApp: App {
                 vm: appState.vm,
                 box: appState.sessionBox,
                 cap: appState.capHolder,
-                engineKey: $engineKey,
                 presetKey: $presetKey
             )
         }
@@ -155,7 +190,6 @@ struct ContentView: View {
     let vm: AppViewModel
     let box: SessionBox
     let cap: CapabilityHolder
-    @Binding var engineKey: String
     @Binding var presetKey: String
 
     // Directional Translation session configurations — fixed for the app lifetime.
@@ -230,12 +264,10 @@ struct ContentView: View {
 
                 Spacer()
 
-                // Engine / preset settings — changes take effect after restart.
+                // Preset setting — changes take effect after restart. There is no
+                // engine picker: ADR 0009 ships one model on one runtime, and the
+                // alternative would have silently loaded a different model.
                 Menu {
-                    Picker("Engine", selection: $engineKey) {
-                        Text("llama.cpp GGUF (default)").tag("llama")
-                        Text("MLX 4-bit").tag("mlx")
-                    }
                     Picker("Memory", selection: $presetKey) {
                         Text("8 GB / conservative").tag("conservative8GB")
                         Text("16 GB / permissive").tag("permissive16GB")
@@ -249,7 +281,7 @@ struct ContentView: View {
                 }
                 .menuStyle(.borderlessButton)
                 .frame(width: 22)
-                .help("Engine/preset changes require a restart")
+                .help("Memory-preset changes require a restart")
 
                 // _exit not exit: llama.cpp b9878 aborts in a ggml-metal static
                 // destructor at normal teardown (upstream GGML_ASSERT in
@@ -262,12 +294,22 @@ struct ContentView: View {
         .frame(width: 320)
 
         // Tick loop: advances idle-timeout and warn-debounce in ResidencyManager.
-        // Also re-probes Translation-framework capability on each tick (cheap).
+        // The 1 s cadence is set by the residency timers, not by the capability gate:
+        // capability only changes when the user installs or removes an OS language
+        // model, so re-probing it every second is ~30x wasted work. The first probe
+        // happens at session creation in .translationTask below.
+        // ponytail: fixed 30 s cadence; make it event-driven if the framework ever
+        // exposes an availability-changed notification.
         .task { @MainActor in
+            var ticksSinceProbe = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 await vm.tick()
-                await probeCapability()
+                ticksSinceProbe += 1
+                if ticksSinceProbe >= 30 {
+                    ticksSinceProbe = 0
+                    await probeCapability()
+                }
             }
         }
 
@@ -283,10 +325,9 @@ struct ContentView: View {
         .translationTask(jaEnConfig) { session in
             box.jaEnSession = session
             await probeCapability()
-            if !cap.didPrepare && cap.value.pairSupported && !cap.value.modelDownloaded
-                    && vm.snapshot.pressure == .normal {
-                cap.didPrepare = true
-                try? await session.prepareTranslation()
+            if cap.value.pairSupported, !cap.value.modelDownloaded,
+               vm.snapshot.pressure == .normal, cap.claimPrepare() {
+                try? await SendableSession(session: session).session.prepareTranslation()
             }
             try? await Task.sleep(nanoseconds: .max)
             box.jaEnSession = nil

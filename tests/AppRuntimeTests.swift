@@ -9,6 +9,7 @@ import Testing
 
 // MARK: - Fixture
 
+@MainActor
 private struct Fixture {
     let clock = ManualClock()
     let pressure = FakePressureSource()
@@ -34,6 +35,7 @@ private struct Fixture {
 // MARK: - Suite
 
 @Suite("AppRuntime — M3 Wave A facade")
+@MainActor
 struct AppRuntimeTests {
 
     // ── (1) cold start ────────────────────────────────────────────────────────

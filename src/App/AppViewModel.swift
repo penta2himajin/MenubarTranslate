@@ -23,7 +23,14 @@ public enum TranslationDirection: String, Sendable, CaseIterable {
 }
 
 /// Observable view model owning an `AppRuntime`; the menu-bar shell binds to it.
+/// `@MainActor` because SwiftUI reads this `@Observable` state on the main actor
+/// while `translate()` mutates it. As a `nonisolated async` method its body ran on
+/// the generic executor (SE-0338), so every write to `isBusy`/`output` landed off
+/// the main actor — a real race that an `@unchecked Sendable` conformance in the
+/// app target was suppressing. Isolating the class removes both the race and the
+/// need for that conformance, since a `@MainActor` class is implicitly `Sendable`.
 @Observable
+@MainActor
 public final class AppViewModel {
     public private(set) var input: String = ""
     public private(set) var output: String = ""

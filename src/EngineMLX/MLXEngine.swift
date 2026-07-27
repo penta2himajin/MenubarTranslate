@@ -26,6 +26,11 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
     private let modelDirectory: String
     private var container: ModelContainer?  // nil = evicted
     private var modelType: String = ""
+    /// MiLMMT ships no chat template and nothing in `config.json` names it
+    /// (`model_type` is the generic `gemma3_text`), so the directory is the only
+    /// signal available — the MLX counterpart of the `general.basename` check
+    /// LlamaEngine makes for the same reason.
+    private var isMiLMMT: Bool { modelDirectory.lowercased().contains("milmmt") }
 
     public init(modelDirectory: String) {
         self.modelDirectory = modelDirectory
@@ -78,24 +83,37 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
             tokens = await container.encode(prompt)
             parameters = GenerateParameters(maxTokens: 512, temperature: 0.01)
             stripper = Self.stripGemma
+        case _ where isMiLMMT:
+            // Raw-prompt translation model — applyChatTemplate would throw, since
+            // Xiaomi ships no template at all.
+            tokens = await container.encode(PromptBuilder.milmmt(text: text, pair: pair))
+            // Model card: top_k=1, temperature=0.
+            parameters = GenerateParameters(maxTokens: 512, temperature: 0.0)
+            stripper = Self.stripMiLMMT
         default:
+            // Every other family is a general instruct model: hand it the shared
+            // translation instruction as a user message and let the model's own
+            // chat template do the framing. Enumerating families here is what let
+            // gemma4 fall through to a raw un-templated prompt — the failure mode
+            // ADR 0008 root-caused — so the dispatch asks the tokenizer instead.
+            let messages: [[String: any Sendable]] = [
+                ["role": "user", "content": PromptBuilder.instruct(text: text, pair: pair)],
+            ]
+            tokens = try await container.perform { ctx in
+                try ctx.tokenizer.applyChatTemplate(messages: messages)
+            }
             if modelType.contains("hunyuan") {
-                // Hy-MT2: chat-message based prompt via the model's chat template.
-                let message = Self.hunyuanMessage(text: text, pair: pair)
-                let messages: [[String: any Sendable]] = [
-                    ["role": "user", "content": message],
-                ]
-                tokens = try await container.perform { ctx in
-                    try ctx.tokenizer.applyChatTemplate(messages: messages)
+                switch SamplingProfile.current {
+                case .modelCard:
+                    parameters = GenerateParameters(maxTokens: 512, temperature: 0.7, topP: 0.6)
+                case .greedy:
+                    parameters = GenerateParameters(maxTokens: 512, temperature: 0.0)
                 }
-                parameters = GenerateParameters(maxTokens: 512, temperature: 0.7, topP: 0.6)
                 stripper = Self.stripHunyuan
             } else {
-                // Generic fallback.
-                let prompt = "Translate the following text into \(pair.targetName):\n\n\(text)"
-                tokens = await container.encode(prompt)
-                parameters = GenerateParameters(maxTokens: 512, temperature: 0.3)
-                stripper = { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                // Match the gemma3 row's decoder so transcripts stay comparable.
+                parameters = GenerateParameters(maxTokens: 512, temperature: 0.01)
+                stripper = Self.stripTurnMarkers
             }
         }
 
@@ -140,18 +158,20 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
                         "<｜hy_begin▁of▁sentence｜>",
                     ]
                 }
+            } else if isMiLMMT {
+                // No turn marker at all: without this the model rolls straight on
+                // into a second translation block and burns the full 512 tokens.
+                await container.update { ctx in
+                    ctx.configuration.stopStrings = ["Translate this from"]
+                }
+            } else {
+                // gemma4 closes a turn with <turn|>, not with its declared <eos>,
+                // so generation would otherwise run to maxTokens.
+                await container.update { ctx in
+                    ctx.configuration.stopStrings = ["<turn|>", "<|turn>"]
+                }
             }
         }
-    }
-
-    // MARK: - Prompt builders (MLX-specific; shared prompt roots live in PromptBuilder)
-
-    private static func hunyuanMessage(text: String, pair: LanguagePair) -> String {
-        """
-        Translate the following text into \(pair.targetName). Note that you should only output the translated result without any additional explanation:
-
-        \(text)
-        """
     }
 
     // MARK: - Output stripping
@@ -166,6 +186,29 @@ public final class MLXEngine: TranslationEngine, @unchecked Sendable {
         s = s.replacingOccurrences(of: "<start_of_turn>model", with: "")
         s = s.replacingOccurrences(of: "<start_of_turn>", with: "")
         s = s.replacingOccurrences(of: "<end_of_turn>", with: "")
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// A raw-prompt model has no turn marker to stop at, so it can run on into a
+    /// second translation block. Cut at the next prompt header.
+    private static func stripMiLMMT(_ output: String) -> String {
+        var s = output
+        if let r = s.range(of: "Translate this from") {
+            s = String(s[..<r.lowerBound])
+        }
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Drops gemma4-style turn scaffolding (`<|turn>model`, `<turn|>`) that a
+    /// stop-string can leave partially decoded at the tail.
+    private static func stripTurnMarkers(_ output: String) -> String {
+        var s = output
+        if let range = s.range(of: "<turn|>") {
+            s = String(s[..<range.lowerBound])
+        }
+        for marker in ["<|turn>model", "<|turn>user", "<|turn>system", "<|turn>", "<turn|>"] {
+            s = s.replacingOccurrences(of: marker, with: "")
+        }
         return s.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
@@ -210,10 +253,17 @@ private struct LocalTokenizerLoader: TokenizerLoader {
                 // swift-transformers doesn't know "TokenizersBackend"; the underlying
                 // tokenizer.json is a standard BPE — use PreTrainedTokenizer instead.
                 configDict["tokenizer_class"] = "PreTrainedTokenizer" as NSString
-                // Embed the jinja chat template so applyChatTemplate works; the template
-                // file takes precedence over any in-config template (there isn't one here).
-                let jinjURL = directory.appendingPathComponent("chat_template.jinja")
-                if let jinja = try? String(contentsOf: jinjURL, encoding: .utf8) {
+            }
+            // Embed the jinja chat template so applyChatTemplate works.
+            // swift-transformers resolves the template only from
+            // tokenizer_config.json["chat_template"] and never reads the standalone
+            // chat_template.jinja that newer checkpoints ship, so without this the
+            // call throws. Applied regardless of tokenizer_class: gating it on the
+            // TokenizersBackend patch above silently excluded every checkpoint that
+            // declares a class swift-transformers already knows — gemma4 among them.
+            if configDict["chat_template"] == nil {
+                let jinjaURL = directory.appendingPathComponent("chat_template.jinja")
+                if let jinja = try? String(contentsOf: jinjaURL, encoding: .utf8) {
                     configDict["chat_template"] = jinja as NSString
                 }
             }

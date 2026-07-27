@@ -11,16 +11,21 @@ with more permissive residency.
 
 ## Inference core
 
-TranslateGemma-4B, GGUF `Q4_K_M` (~2.5 GB disk, ~3–3.5 GB resident), on a
-llama.cpp / Metal runtime (ADR 0001). The model is Dense, which shapes the whole
+Gemma 4 E2B, GGUF `q4_0` from Google's QAT build (~3.35 GB disk), on a
+llama.cpp / Metal runtime (ADR 0009). The model is Dense, which shapes the whole
 memory strategy.
+
+Weights are mapped file-backed, so what the OS charges against the process is
+not the weights but the KV cache: 174.9 MB of `phys_footprint` at `n_ctx = 1024`,
+alongside ~3.1 GB of clean, reclaimable pages
+(`docs/bench/2026-07-27-gguf-residency.md`).
 
 ## Memory strategy
 
 Because the model is Dense, per-token weight streaming is bandwidth-bound and is not
 used (ADR 0002). Instead the process stays alive and only **weights** are evicted and
 reloaded — *weight-level residency* — amortising Metal/runtime init. A cold reload of
-~2.5 GB is ~0.5 s.
+~3.35 GB is ~0.55 s.
 
 Residency is managed by live signals, not by installed-RAM buckets (ADR 0003): RAM
 tier only sets an initial preset; actual eviction is driven by **idle timeout ∨
@@ -58,8 +63,50 @@ binding, and the `MenubarTranslateApp` target (`app/`, macOS 15) owns everything
 OS-facing: the `MenuBarExtra` shell, a 1 s tick loop driving idle-timeout, and the
 Translation-framework wiring — `LanguageAvailability` probes feed the ADR 0006
 capability gate, and live `TranslationSession`s are handed to the core through
-`OSTranslationEngine`'s closure seams. Default runtime is llama.cpp/GGUF (ADR 0008);
-MLX is the alternate.
+`OSTranslationEngine`'s closure seams. The shipping runtime is llama.cpp/GGUF
+and the model is Gemma 4 E2B (ADR 0009); MLX is retained for development and
+quantization experiments, not as a shipping path.
+
+## Known upstream issues
+
+**llama.cpp b9878 aborts at process teardown.** A `ggml-metal` static destructor
+trips `GGML_ASSERT([rsets->data count] == 0)` (`ggml-metal-device.m:622`) after a
+successful run, turning a clean exit into signal 6 / exit code 134. It fires after
+all work has completed, so results are unaffected — but it corrupts the exit status,
+which matters for scripting and CI.
+
+Both entry points therefore end with `_exit(0)` rather than `exit(0)`, skipping
+`atexit` handlers and static destructors (`mbt/main.swift`, and the Quit / restart
+buttons in `app/MenubarTranslateApp.swift`). This is safe because all output goes
+through unbuffered `FileHandle` writes, so there is nothing to flush.
+
+`swift test` has no such escape hatch: the assert fires in the test harness after
+the suite reports, so a fully green run can still surface as `exited with unexpected
+signal code 6`. **Read the `Test run with N tests ... passed` line, not the process
+exit status.** Re-check this when the pin in `scripts/build-llama-xcframework.sh`
+moves; the workarounds can go once upstream fixes the destructor.
+
+**`default.metallib` is required by MLX and resolved from the working directory.**
+The tracked `default.metallib` at the repo root holds MLX's Metal kernels. Without
+it, anything on the MLX path dies with `MLX error: Failed to load the default
+metallib` (mlx-swift `stream.cpp:115`) — `mbt --engine mlx` and the MLX tests alike.
+
+**This no longer blocks packaging.** ADR 0009 makes llama.cpp/GGUF the only
+shipping runtime, and the app target dropped its `MTEngineMLX` dependency, so the
+shipped bundle does not link mlx-swift and never looks for this file. What remains
+is a development-tooling constraint:
+
+- mlx-swift looks the library up relative to the **current working directory**, so
+  the MLX path only works when the process is launched from the repo root. It is
+  why `swift test` passes; running the same binary from anywhere else fails. This
+  now affects only `mbt --engine mlx` and the MLX tests.
+- Nothing in the repo produces the file. It is a committed 3.8 MB binary with no
+  recorded origin, and `scripts/build-llama-xcframework.sh` neither builds nor
+  installs it (that script covers llama.cpp only — ggml embeds its own Metal
+  library and does *not* use this file).
+
+Do not delete it as an untracked-looking build artifact; the llama.cpp path keeps
+working without it, so a llama-only smoke test will not catch the breakage.
 
 ## Open questions
 

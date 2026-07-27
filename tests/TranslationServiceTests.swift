@@ -9,6 +9,7 @@ private extension ResidencyConfig {
     )
 }
 
+@MainActor
 private struct Fixture {
     let clock = ManualClock()
     let pressure = FakePressureSource()
@@ -24,6 +25,7 @@ private struct Fixture {
 }
 
 @Suite("TranslationService — orchestration")
+@MainActor
 struct TranslationServiceTests {
     @Test("cold start loads, infers, and returns the lifecycle trace")
     func coldStart() async throws {

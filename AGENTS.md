@@ -7,9 +7,10 @@ direction is Japanese ↔ English. All translation runs on-device on Apple Silic
 no translation traffic leaves the machine.
 
 The primary memory target is **8 GB unified memory**; 16 GB+ configurations are
-also supported with more permissive residency. Inference uses **TranslateGemma-4B
-(GGUF Q4_K_M)** on a llama.cpp / Metal runtime, with a capability-gated fallback to
-Apple's on-device **Translation framework** when the app is under memory pressure.
+also supported with more permissive residency. Inference uses **Gemma 4 E2B
+(GGUF `q4_0`, Google's QAT build)** on a llama.cpp / Metal runtime, with a
+capability-gated fallback to Apple's on-device **Translation framework** when the
+app is under memory pressure. No second model ships (ADR 0009).
 
 Detailed design lives under `docs/`. Start with @docs/architecture.md and the ADRs
 in @docs/decisions/.

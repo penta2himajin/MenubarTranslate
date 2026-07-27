@@ -42,7 +42,7 @@ let configs = buildBenchConfigMatrix(
 
 func makeEngine(for name: String, path: String) -> any TranslationEngine {
     switch name {
-    case "gemma-mlx", "hymt-1.8b-mlx", "hymt-7b-mlx":
+    case "gemma-mlx", "hymt-1.8b-mlx", "hymt-7b-mlx", "milmmt-1b-mlx", "milmmt-1b-mlx6":
         return MLXEngine(modelDirectory: path)
     case "gemma-gguf", "hymt-7b-gguf":
         return LlamaEngine(modelPath: path)
@@ -195,7 +195,12 @@ let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
 var report = ""
 report += "# mbt-bench Report\n\n"
 report += "**Machine:** Apple Silicon, RAM: \(String(format: "%.0f", ramGB)) GB, macOS \(osVersion)\n"
-report += "**llama.cpp pin:** b9878 | **mlx-swift-lm:** 3.31.4\n\n"
+report += "**llama.cpp pin:** b9878 | **mlx-swift-lm:** 3.31.4\n"
+// Stamped so a transcript can never be read without knowing which decoder produced
+// it — ADR 0008 compared families under different samplers precisely because this
+// was not recorded.
+report += "**llama.cpp n_ctx:** \(ProcessInfo.processInfo.environment["MBT_N_CTX"] ?? "4096")\n"
+report += "**Hy-MT2 sampling:** \(SamplingProfile.current == .greedy ? "greedy (MBT_SAMPLING=greedy)" : "model card (temp 0.7 / top-p 0.6)")\n\n"
 report += "## Summary\n\n"
 report += BenchFormatter.markdownTable(results)
 report += "\n## Transcripts\n\n"

@@ -6,6 +6,11 @@ import Foundation
 ///
 /// Exit codes: 0 success · 1 usage/parse error · 2 translation/engine error · 3 unavailable
 /// (e.g. a native engine not built into this configuration).
+// @MainActor: the CLI builds and drives the same TranslationService the app does,
+// and that type is main-actor confined (see AppRuntime's caller contract). A
+// one-shot CLI has no other context to be on, and the engines offload their own
+// work, so nothing is serialised here that was not already.
+@MainActor
 public struct CommandLineDriver {
     public init() {}
 
@@ -39,11 +44,21 @@ public struct CommandLineDriver {
         var text: [String] = []
     }
 
-    /// Run the CLI with optional engine factories for dependency injection (e.g. in tests).
-    /// Each factory receives the model path/directory string and returns an engine instance.
-    /// STUB — implementation pending: factories are not yet wired into the engine-selection
-    /// path; this overload exists so tests referencing the injection point compile and
-    /// can assert on the intended (Wave 1) behaviour.
+    /// Run the CLI. `stdin` is the already-read piped text (or nil). Output goes to the
+    /// injected sinks. Returns the process exit code.
+    ///
+    /// Equivalent to the factory overload with no factories registered: `--engine fake`
+    /// works, every native engine reports "not supported in this configuration" (exit 3).
+    public func run(_ args: [String], stdin: String?, out: TextSink, err: TextSink) async -> Int32 {
+        await run(args, stdin: stdin, out: out, err: err, engineFactories: [:])
+    }
+
+    /// Run the CLI with engine factories for dependency injection (`mbt/main.swift` registers
+    /// the native engines; tests register fakes or real ones). Each factory receives the
+    /// resolved model path/directory and returns an engine instance.
+    ///
+    /// `--engine fake` is always served by the built-in `FakeEngine`; an engine that is
+    /// neither `fake` nor present in the map exits 3.
     public func run(
         _ args: [String],
         stdin: String?,
@@ -51,78 +66,6 @@ public struct CommandLineDriver {
         err: TextSink,
         engineFactories: [String: (String) -> any TranslationEngine]
     ) async -> Int32 {
-        // Factory-injection path: when a factory is registered for the requested engine,
-        // construct it, attempt load(), and propagate .unavailable as exit 3 with the
-        // engine's own message. Parse failures and engines absent from the map fall back
-        // to the base run (which keeps its hard-coded fake-only guard).
-        do {
-            let options = try Options.parse(args)
-            if let factory = engineFactories[options.engine] {
-                let modelPaths: [String: String] = [
-                    "llama": ProcessInfo.processInfo.environment["MBT_LLAMA_GGUF"]
-                        ?? "models/weights/translategemma-4b-it-Q4_K_M.gguf",
-                    "mlx": ProcessInfo.processInfo.environment["MBT_MLX_DIR"]
-                        ?? "models/weights/translategemma-mlx",
-                ]
-                let modelPath = modelPaths[options.engine] ?? ""
-                let engine = factory(modelPath)
-                do {
-                    try await engine.load()
-                } catch TranslationEngineError.unavailable(let msg) {
-                    err.write(msg + "\n")
-                    return 3
-                }
-
-                // Engine loaded — parse direction and input, run the full service path.
-                let direction: Direction
-                do {
-                    direction = try Direction.parse(options.direction)
-                } catch {
-                    err.write("\(error)\n")
-                    return 1
-                }
-
-                let joined = options.text.joined(separator: " ")
-                let input = joined.isEmpty ? (stdin?.trimmingCharacters(in: .newlines) ?? "") : joined
-                guard !input.isEmpty else {
-                    err.write("no input text (pass a positional argument or pipe via stdin)\n")
-                    return 1
-                }
-
-                var startPressure: PressureLevel = .normal
-                if let raw = options.simulatePressure, let level = Self.pressureLevel(raw) {
-                    startPressure = level
-                }
-
-                let clock = SystemClock()
-                let pressure = FakePressureSource(initial: startPressure)
-                let manager = ResidencyManager(config: makeConfig(options), clock: clock, pressureSource: pressure)
-                let service = TranslationService(engine: engine, residency: manager)
-                do {
-                    let outcome = try await service.translate(input, direction)
-                    if options.json {
-                        out.write(Self.json(outcome) + "\n")
-                    } else {
-                        out.write(outcome.text + "\n")
-                    }
-                    if options.verbose {
-                        err.write(Self.traceLine(outcome.trace) + "\n")
-                    }
-                    return 0
-                } catch {
-                    err.write("translation failed: \(error)\n")
-                    return 2
-                }
-            }
-        } catch {
-            // Parse error: delegate to base run for the canonical usage message.
-        }
-        return await run(args, stdin: stdin, out: out, err: err)
-    }
-
-    /// Run the CLI. `stdin` is the already-read piped text (or nil). Output goes to the
-    /// injected sinks. Returns the process exit code.
-    public func run(_ args: [String], stdin: String?, out: TextSink, err: TextSink) async -> Int32 {
         if args.first == "run-script" {
             return await runScript(Array(args.dropFirst()), out: out, err: err)
         }
@@ -144,13 +87,6 @@ public struct CommandLineDriver {
             return 1
         }
 
-        // Engine — only the fake engine is linked in this milestone.
-        guard options.engine == "fake" else {
-            err.write("engine '\(options.engine)' is not supported in this configuration; "
-                + "use --engine fake | llama | mlx\n")
-            return 3
-        }
-
         // Simulated starting pressure.
         var startPressure: PressureLevel = .normal
         if let raw = options.simulatePressure {
@@ -169,11 +105,37 @@ public struct CommandLineDriver {
             return 1
         }
 
+        // Engine. Cheap validation above runs first so a usage error never pays for a
+        // multi-gigabyte model load.
+        let engine: any TranslationEngine
+        if let factory = engineFactories[options.engine] {
+            let candidate = factory(Self.modelPath(for: options.engine))
+            // Eager load so an unavailable engine reports its own message as exit 3
+            // rather than surfacing as a generic translation failure. `load()` is
+            // idempotent, so the service's own load on the translate path is free.
+            do {
+                try await candidate.load()
+            } catch TranslationEngineError.unavailable(let msg) {
+                err.write(msg + "\n")
+                return 3
+            } catch {
+                err.write("translation failed: \(error)\n")
+                return 2
+            }
+            engine = candidate
+        } else if options.engine == "fake" {
+            engine = FakeEngine()
+        } else {
+            err.write("engine '\(options.engine)' is not supported in this configuration; "
+                + "use --engine fake | llama | mlx\n")
+            return 3
+        }
+
         // Build the stack and translate.
         let clock = SystemClock()
         let pressure = FakePressureSource(initial: startPressure)
         let manager = ResidencyManager(config: makeConfig(options), clock: clock, pressureSource: pressure)
-        let service = TranslationService(engine: FakeEngine(), residency: manager)
+        let service = TranslationService(engine: engine, residency: manager)
 
         do {
             let outcome = try await service.translate(input, direction)
@@ -189,6 +151,20 @@ public struct CommandLineDriver {
         } catch {
             err.write("translation failed: \(error)\n")
             return 2
+        }
+    }
+
+    /// Where an engine's weights live: environment override, else the repo-relative default.
+    /// Unknown engines get "" — the factory decides what that means.
+    static func modelPath(for engine: String) -> String {
+        let env = ProcessInfo.processInfo.environment
+        switch engine {
+        case "llama":
+            return env["MBT_LLAMA_GGUF"] ?? "models/weights/gemma-4-E2B_q4_0-it.gguf"
+        case "mlx":
+            return env["MBT_MLX_DIR"] ?? "models/weights/translategemma-mlx"
+        default:
+            return ""
         }
     }
 

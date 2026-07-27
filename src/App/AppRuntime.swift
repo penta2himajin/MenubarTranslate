@@ -3,9 +3,20 @@
 /// WeightState, PressureLevel, ResidencyConfig) stay internal; only the types below
 /// cross the boundary.
 ///
-/// **Caller contract**: AppRuntime is not Sendable. Confine it to one execution context
-/// (the same actor or serial queue). The same contract ResidencyManager documents.
-/// Do not annotate with @MainActor — the caller owns the context.
+/// **Caller contract**: AppRuntime is confined to the main actor.
+///
+/// It was previously documented as "not Sendable, confine it to one execution
+/// context — the caller owns the context", but that contract was never actually
+/// honoured: `translate`/`tick` were `nonisolated async`, so per SE-0338 their
+/// bodies ran on the generic executor, while memory-pressure callbacks arrived
+/// separately on `DispatchQueue.main`. Two contexts, one non-Sendable object.
+///
+/// `@MainActor` is what makes the contract true rather than aspirational: pressure
+/// is already delivered on the main queue (`DispatchPressureSource` defaults to
+/// `.main`), so both paths now converge on one executor. It does not put inference
+/// on the main thread — `LlamaEngine` hands work to its own serial queue and
+/// `MLXEngine` to a `ModelContainer` actor, so awaiting them suspends the main
+/// actor rather than blocking it.
 
 // MARK: - Public types
 
@@ -91,13 +102,14 @@ private final class PressureMultiplexer: PressureSource {
 ///
 /// Production wiring uses `SystemClock` + `DispatchPressureSource`.
 /// Tests inject `ManualClock` + `FakePressureSource` via the internal seam init.
+@MainActor
 public final class AppRuntime {
 
     // MARK: Public interface
 
     /// Fired on every residency-state or pressure-level change.
     /// The closure receives the snapshot *after* the transition.
-    public var onChange: ((RuntimeSnapshot) -> Void)?
+    public var onChange: (@MainActor (RuntimeSnapshot) -> Void)?
 
     /// Current weight-lifecycle phase and pressure band.
     public var snapshot: RuntimeSnapshot {
@@ -157,17 +169,27 @@ public final class AppRuntime {
 
         // Chain residency.onEvent: service's handler (set by TranslationService.init) runs
         // first to keep internal accounting intact, then AppRuntime notifies onChange.
+        // `assumeIsolated` rather than a hop: both callbacks are delivered on the
+        // main queue already (residency events originate in main-actor translate/
+        // tick; pressure events in DispatchPressureSource's `.main` queue), and a
+        // hop would make snapshot propagation eventually-consistent for no gain.
+        // If a caller ever wires a pressure source that delivers elsewhere, this
+        // traps loudly instead of racing quietly.
         let serviceHandler = mgr.onEvent
         mgr.onEvent = { [weak self] event in
             serviceHandler?(event)
-            guard let self else { return }
-            self.onChange?(self.snapshot)
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.onChange?(self.snapshot)
+            }
         }
 
         // Wire pressure-level changes to onChange so band updates propagate.
         multi.onChange { [weak self] _ in
-            guard let self else { return }
-            self.onChange?(self.snapshot)
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.onChange?(self.snapshot)
+            }
         }
     }
 
