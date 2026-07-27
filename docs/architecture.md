@@ -91,12 +91,15 @@ The tracked `default.metallib` at the repo root holds MLX's Metal kernels. Witho
 it, anything on the MLX path dies with `MLX error: Failed to load the default
 metallib` (mlx-swift `stream.cpp:115`) — `mbt --engine mlx` and the MLX tests alike.
 
-Two things about it are unresolved, and both bite outside the repo root:
+**This no longer blocks packaging.** ADR 0009 makes llama.cpp/GGUF the only
+shipping runtime, and the app target dropped its `MTEngineMLX` dependency, so the
+shipped bundle does not link mlx-swift and never looks for this file. What remains
+is a development-tooling constraint:
 
 - mlx-swift looks the library up relative to the **current working directory**, so
   the MLX path only works when the process is launched from the repo root. It is
-  why `swift test` passes; running the same binary from anywhere else fails.
-  A packaged `.app` would need the library inside its bundle instead.
+  why `swift test` passes; running the same binary from anywhere else fails. This
+  now affects only `mbt --engine mlx` and the MLX tests.
 - Nothing in the repo produces the file. It is a committed 3.8 MB binary with no
   recorded origin, and `scripts/build-llama-xcframework.sh` neither builds nor
   installs it (that script covers llama.cpp only — ggml embeds its own Metal
