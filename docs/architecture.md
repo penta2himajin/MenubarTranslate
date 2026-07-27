@@ -80,6 +80,25 @@ signal code 6`. **Read the `Test run with N tests ... passed` line, not the proc
 exit status.** Re-check this when the pin in `scripts/build-llama-xcframework.sh`
 moves; the workarounds can go once upstream fixes the destructor.
 
+**`default.metallib` is required by MLX and resolved from the working directory.**
+The tracked `default.metallib` at the repo root holds MLX's Metal kernels. Without
+it, anything on the MLX path dies with `MLX error: Failed to load the default
+metallib` (mlx-swift `stream.cpp:115`) — `mbt --engine mlx` and the MLX tests alike.
+
+Two things about it are unresolved, and both bite outside the repo root:
+
+- mlx-swift looks the library up relative to the **current working directory**, so
+  the MLX path only works when the process is launched from the repo root. It is
+  why `swift test` passes; running the same binary from anywhere else fails.
+  A packaged `.app` would need the library inside its bundle instead.
+- Nothing in the repo produces the file. It is a committed 3.8 MB binary with no
+  recorded origin, and `scripts/build-llama-xcframework.sh` neither builds nor
+  installs it (that script covers llama.cpp only — ggml embeds its own Metal
+  library and does *not* use this file).
+
+Do not delete it as an untracked-looking build artifact; the llama.cpp path keeps
+working without it, so a llama-only smoke test will not catch the breakage.
+
 ## Open questions
 
 Several choices rest on measurements not yet done on real hardware. See
