@@ -315,12 +315,22 @@ struct ContentView: View {
         .frame(width: 320)
 
         // Tick loop: advances idle-timeout and warn-debounce in ResidencyManager.
-        // Also re-probes Translation-framework capability on each tick (cheap).
+        // The 1 s cadence is set by the residency timers, not by the capability gate:
+        // capability only changes when the user installs or removes an OS language
+        // model, so re-probing it every second is ~30x wasted work. The first probe
+        // happens at session creation in .translationTask below.
+        // ponytail: fixed 30 s cadence; make it event-driven if the framework ever
+        // exposes an availability-changed notification.
         .task { @MainActor in
+            var ticksSinceProbe = 0
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 await vm.tick()
-                await probeCapability()
+                ticksSinceProbe += 1
+                if ticksSinceProbe >= 30 {
+                    ticksSinceProbe = 0
+                    await probeCapability()
+                }
             }
         }
 
