@@ -33,7 +33,12 @@ public struct LanguagePair: Sendable, Equatable {
 /// the process and any runtime/Metal/MLX initialisation stay alive across the cycle so a
 /// reload is cheap. Concrete engines (`LlamaEngine`, `MLXEngine`) live in their own targets
 /// and are added in the engine PR; the core depends only on this protocol.
-public protocol TranslationEngine: AnyObject {
+/// `Sendable` because every implementation already serialises internally and is
+/// called from whichever context owns the runtime: `LlamaEngine` funnels through a
+/// private serial queue, `MLXEngine` through a `ModelContainer` actor, and
+/// `OSTranslationEngine` holds only immutable `@Sendable` closures. Requiring it
+/// here states that contract instead of leaving each call site to assume it.
+public protocol TranslationEngine: AnyObject, Sendable {
     /// Make the weights resident. Cheap to repeat after an `evict()` because runtime init is
     /// retained (ADR 0002 — target ≈0.5 s cold reload).
     func load() async throws

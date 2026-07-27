@@ -6,6 +6,11 @@ import Foundation
 ///
 /// Exit codes: 0 success · 1 usage/parse error · 2 translation/engine error · 3 unavailable
 /// (e.g. a native engine not built into this configuration).
+// @MainActor: the CLI builds and drives the same TranslationService the app does,
+// and that type is main-actor confined (see AppRuntime's caller contract). A
+// one-shot CLI has no other context to be on, and the engines offload their own
+// work, so nothing is serialised here that was not already.
+@MainActor
 public struct CommandLineDriver {
     public init() {}
 

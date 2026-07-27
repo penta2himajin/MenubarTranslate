@@ -17,6 +17,7 @@ struct TranslationOutcome: Sendable, Equatable {
 /// Note: this coordinator is confined to a single execution context (its caller). The real
 /// menu-bar runtime wires the timer `tick()` and the dispatch pressure callback onto that
 /// same context; that adapter ships with the engine/UI milestone.
+@MainActor
 final class TranslationService {
     private let engine: TranslationEngine
     private let residency: ResidencyManager

@@ -27,6 +27,7 @@ private func allTrue() -> FallbackCapability {
 }
 
 /// Assert an async op throws `TranslationEngineError.unavailable` specifically.
+@MainActor
 private func expectUnavailable(_ op: () async throws -> Void) async {
     do {
         try await op()
@@ -44,6 +45,7 @@ private func expectUnavailable(_ op: () async throws -> Void) async {
 // MARK: - Suite
 
 @Suite("OSFallback — M3 Wave B: capability gate + OS engine adapter")
+@MainActor
 struct OSFallbackTests {
 
     // ── (a) three-layer gate, all 8 combinations ──────────────────────────────

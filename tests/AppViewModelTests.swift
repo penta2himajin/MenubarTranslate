@@ -28,7 +28,7 @@ private final class ScriptedEngine: TranslationEngine, @unchecked Sendable {
 /// Engine that fires a hook the instant it runs `translate`, so a test can sample the
 /// view model's `isBusy` mid-flight without spawning a Task (same call stack, no Sendable
 /// boundary crossing).
-private final class ProbeEngine: TranslationEngine {
+private final class ProbeEngine: TranslationEngine, @unchecked Sendable {
     var onTranslate: (() -> Void)?
 
     func load() async throws {}
@@ -43,6 +43,7 @@ private final class ProbeEngine: TranslationEngine {
 
 // MARK: - Fixture
 
+@MainActor
 private struct Fixture {
     let clock = ManualClock()
     let pressure = FakePressureSource()
@@ -62,6 +63,7 @@ private struct Fixture {
     }
 }
 
+@MainActor
 private func makeVM(engine: any TranslationEngine) -> AppViewModel {
     let runtime = AppRuntime(
         engine: engine,
@@ -77,6 +79,7 @@ private func makeVM(engine: any TranslationEngine) -> AppViewModel {
 // MARK: - Suite
 
 @Suite("AppViewModel — M3 Wave C1 observable view model")
+@MainActor
 struct AppViewModelTests {
 
     // ── (a) happy path ─────────────────────────────────────────────────────────

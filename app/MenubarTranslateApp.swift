@@ -16,18 +16,6 @@ import MTEngineMLX
 
 // MARK: - Known gap: AppViewModel isolation
 
-// AppViewModel is @Observable and read by SwiftUI on the main actor, but its
-// `translate()`/`tick()` are nonisolated async, so they mutate `output`/`isBusy`/
-// `snapshot` off the main actor. That is a real race, and this conformance is what
-// silences it — it is a suppression, not a proof of safety.
-//
-// The fix is @MainActor on AppViewModel itself (in the core), which also forces
-// AppRuntime.onChange to hop actors. That changes snapshot propagation from
-// synchronous to async and breaks the write-locked
-// tests/AppViewModelTests.swift:snapshotMirrorsRuntime, so it needs its own change
-// with the test contract renegotiated — not a drive-by edit here.
-// ponytail: known-unsafe, scoped and documented; see the note above for the real fix.
-extension AppViewModel: @unchecked Sendable {}
 
 // MARK: - Shared state crossing the OSTranslationEngine seam
 
