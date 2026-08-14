@@ -58,6 +58,15 @@ struct PanelChromeTests {
         #expect(!found.contains("Translation"))
     }
 
+    @Test("target language shows as text with the picker identifier")
+    func targetPickerShowsMenuLabel() {
+        let vm = makeVM()
+        vm.targetLanguage = .ja
+        let window = host(vm)
+        let found = strings(in: window)
+        #expect(found.contains(where: { $0.contains("日本語") }))
+    }
+
     @Test("output text is in the hosted view after translate")
     func hostedViewShowsEngineOutput() async {
         let vm = makeVM()

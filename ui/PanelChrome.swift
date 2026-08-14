@@ -34,14 +34,7 @@ public struct PanelChrome: View {
                 Text("Translate to")
                     .font(.body)
                     .foregroundStyle(.secondary)
-                Picker("Target", selection: $vm.targetLanguage) {
-                    ForEach(pickerLanguages, id: \.self) { lang in
-                        Text(lang.menuLabel).tag(lang)
-                    }
-                }
-                .pickerStyle(.menu)
-                .labelsHidden()
-                .accessibilityIdentifier("target-picker")
+                TargetLanguageMenu(selection: $vm.targetLanguage, languages: pickerLanguages)
                 Spacer()
                 if let caption = vm.progressCaption {
                     HStack(spacing: 6) {
