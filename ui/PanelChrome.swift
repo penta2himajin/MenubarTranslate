@@ -12,6 +12,7 @@ public struct PanelChrome: View {
     @State private var historyOpen = false
     @State private var hoverButton = false
     @State private var hoverCard = false
+    @State private var scrollSync = FieldScrollSync()
 
     public init(
         vm: AppViewModel,
@@ -50,7 +51,11 @@ public struct PanelChrome: View {
                 }
             }
 
-            IMESourceEditor(text: $draft, onStableChange: { vm.scheduleLiveTranslate($0) })
+            IMESourceEditor(
+                text: $draft,
+                onStableChange: { vm.scheduleLiveTranslate($0) },
+                sync: scrollSync
+            )
                 .padding(fieldInset)
                 .frame(minHeight: fieldHeight, maxHeight: fieldHeight)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
@@ -58,17 +63,8 @@ public struct PanelChrome: View {
                 .accessibilityIdentifier("source-input")
 
             ZStack(alignment: .bottomTrailing) {
-                ScrollView {
-                    Text(vm.output.isEmpty ? "Translation appears here" : vm.output)
-                        .textSelection(.enabled)
-                        .foregroundStyle(vm.output.isEmpty ? .tertiary : .primary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.trailing, fieldScrollerGutter())
-                        .padding(.bottom, 28)
-                        .accessibilityIdentifier("translation-output")
-                        .accessibilityValue(vm.output)
-                }
-                .padding(fieldInset)
+                TranslationOutputEditor(text: vm.output, sync: scrollSync)
+                    .padding(fieldInset)
                 Button("Copy") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(vm.output, forType: .string)
