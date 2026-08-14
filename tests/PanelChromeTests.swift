@@ -58,6 +58,19 @@ struct PanelChromeTests {
         #expect(!found.contains("Translation"))
     }
 
+    @Test("runtime status is not shown on the panel")
+    func statusHiddenFromPanel() {
+        let found = strings(in: host(makeVM()))
+        #expect(!found.contains(where: { $0.contains("unloaded") }))
+        #expect(!found.contains("id:status-line"))
+    }
+
+    @Test("settings gear is on the panel")
+    func settingsGearOnPanel() {
+        let found = strings(in: host(makeVM()))
+        #expect(found.contains("id:settings-menu"))
+    }
+
     @Test("target language shows as text with the picker identifier")
     func targetPickerShowsMenuLabel() {
         let vm = makeVM()

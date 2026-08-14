@@ -30,18 +30,20 @@ public struct PanelChrome: View {
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(spacing: 6) {
                 Text("Translate to")
                     .font(.body)
                     .foregroundStyle(.secondary)
                 TargetLanguageMenu(selection: $vm.targetLanguage, languages: pickerLanguages)
-                Spacer()
+                Spacer(minLength: 8)
                 if let caption = vm.progressCaption {
                     HStack(spacing: 6) {
                         ProgressView().controlSize(.small)
                         Text(caption).font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                historyButton
+                SettingsMenu(onQuit: onQuit)
             }
 
             IMESourceEditor(
@@ -82,27 +84,16 @@ public struct PanelChrome: View {
             }
             .frame(minHeight: fieldHeight, maxHeight: fieldHeight)
             .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 6))
-
-            HStack {
-                Text(vm.statusLine)
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .monospacedDigit()
-                    .accessibilityIdentifier("status-line")
-                Spacer()
-                historyButton
-                Button("Quit", action: onQuit)
-                    .buttonStyle(.borderless)
-                    .font(.caption)
-            }
         }
-        .padding(14)
+        .padding(.horizontal, 14)
+        .padding(.top, 8)
+        .padding(.bottom, 14)
         .frame(width: 380)
         .fixedSize(horizontal: false, vertical: true)
-        .overlay(alignment: .bottomTrailing) {
+        .overlay(alignment: .topTrailing) {
             if historyOpen {
                 historyCard
-                    .offset(x: -8, y: -36)
+                    .offset(x: -8, y: 26)
             }
         }
         .onChange(of: vm.targetLanguage) {
@@ -113,16 +104,20 @@ public struct PanelChrome: View {
     }
 
     private var historyButton: some View {
-        Image(systemName: "clock.arrow.circlepath")
-            .imageScale(.medium)
-            .padding(4)
-            .contentShape(Rectangle())
-            .onHover { hovering in
-                hoverButton = hovering
-                refreshHistoryOpen()
-            }
-            .accessibilityIdentifier("history-button")
-            .help("Recent translations")
+        Button {
+            historyOpen = true
+        } label: {
+            Image(systemName: "clock.arrow.circlepath")
+                .imageScale(.medium)
+        }
+        .buttonStyle(.borderless)
+        .contentShape(Rectangle())
+        .onHover { hovering in
+            hoverButton = hovering
+            refreshHistoryOpen()
+        }
+        .accessibilityIdentifier("history-button")
+        .help("Recent translations")
     }
 
     private var historyCard: some View {

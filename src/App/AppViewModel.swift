@@ -63,9 +63,11 @@ public final class AppViewModel {
     public init(runtime: AppRuntime) {
         self.runtime = runtime
         self.snapshot = runtime.snapshot
+        print("status \(statusLine)")
         runtime.onChange = { [weak self] snap in
             guard let self, self.snapshot != snap else { return }
             self.snapshot = snap
+            print("status \(self.statusLine)")
         }
         let picker = AppLanguage.pickerLanguages()
         if let first = picker.first(where: { $0 != .ja }) ?? picker.first {
