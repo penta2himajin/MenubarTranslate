@@ -19,7 +19,8 @@ struct IMESourceEditor: NSViewRepresentable {
         tv.isRichText = false
         tv.font = .systemFont(ofSize: NSFont.systemFontSize)
         tv.backgroundColor = .clear
-        tv.textContainerInset = NSSize(width: 4, height: 4)
+        tv.textContainerInset = .zero
+        tv.textContainer?.lineFragmentPadding = 0
         tv.isHorizontallyResizable = false
         tv.textContainer?.widthTracksTextView = true
         tv.string = text
