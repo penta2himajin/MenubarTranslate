@@ -12,6 +12,7 @@ public struct PanelChrome: View {
     @State private var historyOpen = false
     @State private var hoverButton = false
     @State private var hoverCard = false
+    @State private var hoveredHistoryID: UUID?
     @State private var scrollSync = FieldScrollSync()
 
     public init(
@@ -26,7 +27,6 @@ public struct PanelChrome: View {
 
     private var pickerLanguages: [AppLanguage] { AppLanguage.pickerLanguages() }
     private let fieldHeight: CGFloat = 120
-    private let fieldInset: CGFloat = 8
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -56,7 +56,6 @@ public struct PanelChrome: View {
                 onStableChange: { vm.scheduleLiveTranslate($0) },
                 sync: scrollSync
             )
-                .padding(fieldInset)
                 .frame(minHeight: fieldHeight, maxHeight: fieldHeight)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white, lineWidth: 1.5))
@@ -64,7 +63,6 @@ public struct PanelChrome: View {
 
             ZStack(alignment: .bottomTrailing) {
                 TranslationOutputEditor(text: vm.output, sync: scrollSync)
-                    .padding(fieldInset)
                 Button("Copy") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(vm.output, forType: .string)
@@ -74,7 +72,7 @@ public struct PanelChrome: View {
                 .foregroundStyle(.primary)
                 .padding(.horizontal, 8)
                 .padding(.vertical, 3)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.primary.opacity(0.6)))
                 .disabled(vm.output.isEmpty)
                 .padding(6)
@@ -136,28 +134,13 @@ public struct PanelChrome: View {
 
     private var historyCard: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 8) {
+            LazyVStack(alignment: .leading, spacing: 0) {
                 if vm.history.isEmpty {
                     Text("No history yet").font(.caption).foregroundStyle(.secondary)
                 }
-                ForEach(vm.history) { item in
-                    Button {
-                        vm.applyHistory(item)
-                        draft = item.source
-                        historyOpen = false
-                    } label: {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(item.source)
-                                .font(.caption)
-                                .lineLimit(2)
-                            Text(item.output)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(2)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .buttonStyle(.plain)
+                ForEach(Array(vm.history.enumerated()), id: \.element.id) { index, item in
+                    if index > 0 { Divider() }
+                    historyRow(item)
                 }
             }
             .padding(10)
@@ -167,9 +150,41 @@ public struct PanelChrome: View {
         .shadow(radius: 8)
         .onHover { hovering in
             hoverCard = hovering
+            if !hovering { hoveredHistoryID = nil }
             refreshHistoryOpen()
         }
         .accessibilityIdentifier("history-card")
+    }
+
+    private func historyRow(_ item: TranslationHistoryItem) -> some View {
+        let focused = hoveredHistoryID == item.id
+        return Button {
+            vm.applyHistory(item)
+            draft = item.source
+            historyOpen = false
+        } label: {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(item.source)
+                    .font(.caption)
+                    .lineLimit(2)
+                Text(item.output)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
+            .overlay(
+                RoundedRectangle(cornerRadius: 6)
+                    .strokeBorder(Color.primary.opacity(focused ? 0.35 : 0), lineWidth: 1)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering in
+            hoveredHistoryID = hovering ? item.id : nil
+            hoverCard = true
+            refreshHistoryOpen()
+        }
     }
 
     private func refreshHistoryOpen() {

@@ -23,4 +23,10 @@ struct FieldScrollTests {
         #expect(scrollOriginY(fraction: 1, clipHeight: 100, documentHeight: 500) == 400)
         #expect(scrollOriginY(fraction: 0.5, clipHeight: 100, documentHeight: 500) == 200)
     }
+
+    @Test("trailing gutter is 6pt overlay inset, not scroller width")
+    func trailingGutterIgnoresScrollerWidth() {
+        #expect(fieldTrailingGutter(scrollerWidth: 10) == fieldGlyphTrailing)
+        #expect(fieldTrailingGutter(scrollerWidth: 99) == fieldGlyphTrailing)
+    }
 }

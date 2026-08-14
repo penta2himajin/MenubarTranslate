@@ -1,5 +1,19 @@
 import AppKit
 
+let fieldTextInset: CGFloat = 8
+let fieldScrollerEdge: CGFloat = 1
+let fieldGlyphTrailing: CGFloat = 6
+
+@MainActor
+func overlayScrollerWidth() -> CGFloat {
+    NSScroller.scrollerWidth(for: .mini, scrollerStyle: .overlay)
+}
+
+/// Overlay scrollers sit on the text; do not reserve the bar's hit width.
+func fieldTrailingGutter(scrollerWidth: CGFloat) -> CGFloat {
+    fieldGlyphTrailing
+}
+
 func scrollFraction(clipHeight: CGFloat, documentHeight: CGFloat, originY: CGFloat) -> CGFloat {
     let maxOff = documentHeight - clipHeight
     guard maxOff > 0 else { return 0 }

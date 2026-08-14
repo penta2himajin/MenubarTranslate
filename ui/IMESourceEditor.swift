@@ -24,7 +24,7 @@ struct IMESourceEditor: NSViewRepresentable {
         context.coordinator.parent = self
         sync.register(scroll, role: .source)
         guard let tv = scroll.documentView as? SourceTextView else { return }
-        tv.trailingGutter = fieldScrollerGutter()
+        configureFieldScroll(scroll, textView: tv)
         if !tv.hasMarkedText(), tv.string != text {
             tv.string = text
         }
@@ -83,7 +83,7 @@ struct TranslationOutputEditor: NSViewRepresentable {
         context.coordinator.parent = self
         sync.register(scroll, role: .output)
         if let tv = scroll.documentView as? SourceTextView {
-            tv.trailingGutter = fieldScrollerGutter()
+            configureFieldScroll(scroll, textView: tv)
         }
         apply(text, to: scroll)
     }
@@ -124,16 +124,21 @@ struct TranslationOutputEditor: NSViewRepresentable {
     }
 }
 
-/// Right-side gap so overlay scrollers do not sit on glyphs.
 @MainActor
-func fieldScrollerGutter() -> CGFloat {
-    NSScroller.scrollerWidth(for: .regular, scrollerStyle: NSScroller.preferredScrollerStyle) + 4
+func configureFieldScroll(_ scroll: NSScrollView, textView: SourceTextView) {
+    scroll.hasVerticalScroller = true
+    scroll.scrollerStyle = .overlay
+    scroll.automaticallyAdjustsContentInsets = false
+    scroll.scrollerInsets = NSEdgeInsets(top: 0, left: 0, bottom: 0, right: fieldScrollerEdge)
+    scroll.verticalScroller?.controlSize = .mini
+    textView.leadingGutter = fieldTextInset
+    textView.trailingGutter = fieldTrailingGutter(scrollerWidth: overlayScrollerWidth())
+    textView.textContainerInset = NSSize(width: 0, height: fieldTextInset)
 }
 
 @MainActor
 private func makeFieldScroll(editable: Bool, delegate: NSTextViewDelegate?) -> NSScrollView {
     let scroll = NSScrollView()
-    scroll.hasVerticalScroller = true
     scroll.borderType = .noBorder
     scroll.drawsBackground = false
     let tv = SourceTextView()
@@ -143,22 +148,30 @@ private func makeFieldScroll(editable: Bool, delegate: NSTextViewDelegate?) -> N
     tv.isRichText = false
     tv.font = .systemFont(ofSize: NSFont.systemFontSize)
     tv.backgroundColor = .clear
-    tv.textContainerInset = .zero
     tv.textContainer?.lineFragmentPadding = 0
     tv.isVerticallyResizable = true
     tv.isHorizontallyResizable = false
     tv.textContainer?.widthTracksTextView = false
-    tv.trailingGutter = fieldScrollerGutter()
     tv.minSize = NSSize(width: 0, height: 0)
     tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
     tv.autoresizingMask = [.width]
     scroll.documentView = tv
+    configureFieldScroll(scroll, textView: tv)
     return scroll
 }
 
 final class SourceTextView: NSTextView {
+    var leadingGutter: CGFloat = fieldTextInset {
+        didSet { if oldValue != leadingGutter { invalidateTextContainerWidth() } }
+    }
     var trailingGutter: CGFloat = 0 {
         didSet { if oldValue != trailingGutter { invalidateTextContainerWidth() } }
+    }
+
+    override var textContainerOrigin: NSPoint {
+        var origin = super.textContainerOrigin
+        origin.x += leadingGutter
+        return origin
     }
 
     override func setFrameSize(_ newSize: NSSize) {
@@ -168,7 +181,7 @@ final class SourceTextView: NSTextView {
 
     private func invalidateTextContainerWidth() {
         textContainer?.containerSize = NSSize(
-            width: max(1, frame.width - trailingGutter),
+            width: max(1, frame.width - leadingGutter - trailingGutter),
             height: .greatestFiniteMagnitude
         )
     }
