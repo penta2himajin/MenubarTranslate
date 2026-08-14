@@ -53,6 +53,18 @@ struct TranslationServiceTests {
         #expect(f.engine.calls.contains(.evict))
     }
 
+    @Test("translateMany infers once for the whole batch")
+    func translateManyOneInfer() async throws {
+        let f = Fixture()
+        let outcome = try await f.service.translateMany([
+            ("a", .jaToEn),
+            ("b", .jaToEn),
+        ])
+        #expect(outcome.texts == ["[ja-en] a", "[ja-en] b"])
+        #expect(outcome.trace.filter { $0.event == .inferStarted }.count == 1)
+        #expect(outcome.trace.filter { $0.event == .inferFinished }.count == 1)
+    }
+
     @Test("the translation path never contacts the network guard (local-only)")
     func localOnly() async throws {
         let f = Fixture()

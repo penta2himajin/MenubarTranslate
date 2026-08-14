@@ -18,6 +18,11 @@ swift run mbt --dir ja-en "こんにちは"          # console
 swift run MenubarTranslateApp                  # menu-bar app
 ```
 
+The menu-bar app can listen on **loopback** `http://127.0.0.1:18787/` (override
+`MBT_HTTP_PORT`) for [Immersive Translate](https://immersivetranslate.com/en/docs/services/custom/)
+Custom API. Turn on **HTTP Loopback** in the gear menu. Enable Beta features in
+the extension, pick Custom API, set that URL. Pairs are ja / en / zh only.
+
 The real engines need local weights (`MBT_LLAMA_GGUF` / `MBT_MLX_DIR`) and, for
 `--engine llama`, one run of `./scripts/build-llama-xcframework.sh`. Without
 them `--engine fake` still exercises the whole residency path, and the

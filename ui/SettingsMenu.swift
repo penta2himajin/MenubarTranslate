@@ -1,6 +1,7 @@
 import AppKit
 import ServiceManagement
 import SwiftUI
+import MenubarTranslateCore
 
 enum LoginItem {
     static var isEnabled: Bool { SMAppService.mainApp.status == .enabled }
@@ -20,15 +21,18 @@ enum LoginItem {
 
 struct SettingsMenu: NSViewRepresentable {
     var onQuit: () -> Void
+    var onToggleHTTPLoopback: (Bool) -> Void
 
     func makeNSView(context: Context) -> SettingsMenuNSView {
         let view = SettingsMenuNSView()
         view.onQuit = onQuit
+        view.onToggleHTTPLoopback = onToggleHTTPLoopback
         return view
     }
 
     func updateNSView(_ view: SettingsMenuNSView, context: Context) {
         view.onQuit = onQuit
+        view.onToggleHTTPLoopback = onToggleHTTPLoopback
     }
 
     func sizeThatFits(_ proposal: ProposedViewSize, nsView: SettingsMenuNSView, context: Context)
@@ -40,6 +44,7 @@ struct SettingsMenu: NSViewRepresentable {
 
 final class SettingsMenuNSView: NSView {
     var onQuit: () -> Void = {}
+    var onToggleHTTPLoopback: (Bool) -> Void = { _ in }
 
     private let icon = NSImageView()
 
@@ -80,6 +85,15 @@ final class SettingsMenuNSView: NSView {
         login.target = self
         login.state = LoginItem.isEnabled ? .on : .off
         menu.addItem(login)
+
+        let http = NSMenuItem(
+            title: "HTTP Loopback (\(ImmersiveTranslate.port()))",
+            action: #selector(toggleHTTP),
+            keyEquivalent: ""
+        )
+        http.target = self
+        http.state = LoopbackPreference.isEnabled() ? .on : .off
+        menu.addItem(http)
         menu.addItem(.separator())
 
         let quit = NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q")
@@ -95,6 +109,10 @@ final class SettingsMenuNSView: NSView {
 
     @objc private func toggleLogin() {
         LoginItem.setEnabled(!LoginItem.isEnabled)
+    }
+
+    @objc private func toggleHTTP() {
+        onToggleHTTPLoopback(!LoopbackPreference.isEnabled())
     }
 
     @objc private func quit() {

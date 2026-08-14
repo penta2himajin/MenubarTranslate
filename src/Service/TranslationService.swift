@@ -6,6 +6,11 @@ struct TranslationOutcome: Sendable, Equatable {
     let trace: [ResidencyEvent]
 }
 
+struct TranslationBatchOutcome: Sendable, Equatable {
+    let texts: [String]
+    let trace: [ResidencyEvent]
+}
+
 /// Orchestrates an async `TranslationEngine` against the synchronous `ResidencyManager`.
 ///
 /// A `translate(_:_:)` call **is** the user intent (ADR 0004): it is the only thing that
@@ -27,6 +32,7 @@ final class TranslationService {
     private var evictionPending = false
     /// Append-only transition log; a per-call slice becomes `TranslationOutcome.trace`.
     private var events: [ResidencyEvent] = []
+    private var translateTail: Task<Void, Never> = Task {}
 
     init(
         engine: TranslationEngine,
@@ -47,6 +53,32 @@ final class TranslationService {
     }
 
     func translate(_ text: String, pair: LanguagePair) async throws -> TranslationOutcome {
+        let previous = translateTail
+        let work = Task { @MainActor in
+            await previous.value
+            return try await self.performTranslate(text, pair: pair)
+        }
+        translateTail = Task { _ = try? await work.value }
+        return try await work.value
+    }
+
+    func translateMany(_ items: [(String, LanguagePair)]) async throws -> TranslationBatchOutcome {
+        let previous = translateTail
+        let work = Task { @MainActor in
+            await previous.value
+            return try await self.performTranslateMany(items)
+        }
+        translateTail = Task { _ = try? await work.value }
+        return try await work.value
+    }
+
+    private func performTranslate(_ text: String, pair: LanguagePair) async throws -> TranslationOutcome {
+        let batch = try await performTranslateMany([(text, pair)])
+        return TranslationOutcome(text: batch.texts[0], trace: batch.trace)
+    }
+
+    private func performTranslateMany(_ items: [(String, LanguagePair)]) async throws -> TranslationBatchOutcome {
+        if items.isEmpty { return TranslationBatchOutcome(texts: [], trace: []) }
         let start = events.count
 
         if residency.needsLoad {
@@ -61,12 +93,12 @@ final class TranslationService {
         }
 
         try residency.beginInference()
-        let output = try await engine.translate(text, pair)
+        let texts = try await engine.translateMany(items)
         try residency.endInference()
 
         await drainEviction()
 
-        return TranslationOutcome(text: output, trace: Array(events[start...]))
+        return TranslationBatchOutcome(texts: texts, trace: Array(events[start...]))
     }
 
     /// Advance time-based residency conditions and perform any resulting eviction. The

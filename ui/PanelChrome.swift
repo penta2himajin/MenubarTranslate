@@ -8,6 +8,7 @@ public struct PanelChrome: View {
     @Bindable public var vm: AppViewModel
     @Binding public var draft: String
     public var onQuit: () -> Void
+    public var onToggleHTTPLoopback: (Bool) -> Void
 
     @State private var historyOpen = false
     @State private var hoverButton = false
@@ -18,11 +19,13 @@ public struct PanelChrome: View {
     public init(
         vm: AppViewModel,
         draft: Binding<String>,
-        onQuit: @escaping () -> Void = {}
+        onQuit: @escaping () -> Void = {},
+        onToggleHTTPLoopback: @escaping (Bool) -> Void = { _ in }
     ) {
         self.vm = vm
         self._draft = draft
         self.onQuit = onQuit
+        self.onToggleHTTPLoopback = onToggleHTTPLoopback
     }
 
     private var pickerLanguages: [AppLanguage] { AppLanguage.pickerLanguages() }
@@ -43,7 +46,7 @@ public struct PanelChrome: View {
                     }
                 }
                 historyButton
-                SettingsMenu(onQuit: onQuit)
+                SettingsMenu(onQuit: onQuit, onToggleHTTPLoopback: onToggleHTTPLoopback)
             }
 
             IMESourceEditor(
