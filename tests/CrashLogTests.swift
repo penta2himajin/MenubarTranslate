@@ -36,6 +36,51 @@ struct CrashLogTests {
         #expect(copied == ["MenubarTranslateApp-1.ips"])
     }
 
+    @Test("harvestAll copies reports from every DiagnosticReports directory")
+    func harvestAllCopiesFromEachSource() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        let user = root.appendingPathComponent("user", isDirectory: true)
+        let system = root.appendingPathComponent("system", isDirectory: true)
+        let dest = root.appendingPathComponent("Logs", isDirectory: true)
+        try fm.createDirectory(at: user, withIntermediateDirectories: true)
+        try fm.createDirectory(at: system, withIntermediateDirectories: true)
+        try fm.createDirectory(at: dest, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+
+        try "u".write(
+            to: user.appendingPathComponent("MenubarTranslate-user.ips"),
+            atomically: true,
+            encoding: .utf8
+        )
+        try "s".write(
+            to: system.appendingPathComponent("MenubarTranslate-system.ips"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        try CrashLog.harvestAll(from: [user, system], into: dest, fileManager: fm)
+
+        let copied = Set(try fm.contentsOfDirectory(atPath: dest.path))
+        #expect(copied == ["MenubarTranslate-user.ips", "MenubarTranslate-system.ips"])
+    }
+
+    @Test("appendCrashText writes last-crash.log")
+    func appendCrashTextWritesLastCrashLog() throws {
+        let fm = FileManager.default
+        let dir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: dir) }
+
+        try CrashLog.appendCrashText("boom\n", directory: dir, fileManager: fm)
+
+        let body = try String(
+            contentsOf: dir.appendingPathComponent("last-crash.log"),
+            encoding: .utf8
+        )
+        #expect(body == "boom\n")
+    }
+
     @Test("console log rotates when it exceeds the size cap")
     func rotatesOversizedConsoleLog() throws {
         let fm = FileManager.default

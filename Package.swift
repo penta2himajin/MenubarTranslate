@@ -114,7 +114,9 @@ targets += [
         // of the shipping path — see docs/architecture.md).
         name: "MenubarTranslateApp",
         dependencies: ["MenubarTranslateUI", "MenubarTranslateCore", "MTEngineLlama"],
-        path: "app"
+        path: "app",
+        exclude: ["Info.plist"],
+        resources: [.process("Resources")]
     ),
     .target(
         name: "MenubarTranslateUI",
