@@ -24,6 +24,7 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
     private let queue = DispatchQueue(label: "mbt.llama-engine")
     private var model: OpaquePointer? = nil   // llama_model*
     private var ctx: OpaquePointer? = nil     // llama_context*
+    private var lastPromptTokens: [llama_token] = []
 
     public init(modelPath: String) {
         self.modelPath = modelPath
@@ -100,6 +101,7 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
             queue.async { [self] in
                 if let c = self.ctx { llama_free(c); self.ctx = nil }
                 if let m = self.model { llama_model_free(m); self.model = nil }
+                self.lastPromptTokens = []
                 // ponytail: backend stays alive (ADR 0002); only weights are freed.
                 cont.resume()
             }
@@ -163,22 +165,33 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
         }
         tokens = Array(tokens.prefix(Int(nTokens)))
 
-        // Reset KV cache for a clean context.
-        llama_memory_clear(llama_get_memory(ctx), true)
+        let mem = llama_get_memory(ctx)
+        let shared = zip(lastPromptTokens, tokens).prefix(while: { $0 == $1 }).count
+        // Keep the shared prefix in KV; drop generation + the mismatched tail.
+        // Identical prompts still need logits on the last prompt token.
+        var keep = shared
+        if keep == tokens.count { keep = max(0, keep - 1) }
+        if keep == 0 {
+            llama_memory_clear(mem, true)
+        } else if !llama_memory_seq_rm(mem, 0, Int32(keep), -1) {
+            llama_memory_clear(mem, true)
+            keep = 0
+        }
+        lastPromptTokens = tokens
 
-        // Prefill: decode the prompt in one batch.
-        var batch = llama_batch_init(Int32(tokens.count), 0, 1)
+        let suffix = Array(tokens.dropFirst(keep))
+        var batch = llama_batch_init(Int32(max(suffix.count, 1)), 0, 1)
         defer { llama_batch_free(batch) }
 
-        for (i, tok) in tokens.enumerated() {
+        for (i, tok) in suffix.enumerated() {
             batch.token[i] = tok
-            batch.pos[i] = Int32(i)
+            batch.pos[i] = Int32(keep + i)
             batch.n_seq_id[i] = 1
             batch.seq_id[i]![0] = 0
             batch.logits[i] = 0
         }
-        batch.logits[tokens.count - 1] = 1   // only need logits for last prompt token
-        batch.n_tokens = Int32(tokens.count)
+        batch.logits[max(suffix.count, 1) - 1] = 1
+        batch.n_tokens = Int32(suffix.count)
 
         if llama_decode(ctx, batch) != 0 {
             throw TranslationEngineError.unavailable("llama_decode (prefill) failed")

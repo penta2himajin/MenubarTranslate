@@ -43,6 +43,10 @@ final class TranslationService {
     /// Translate `text` in `direction`. Loads on demand (user intent), infers, records use,
     /// and drains any policy-requested eviction before returning. Never touches the network.
     func translate(_ text: String, _ direction: Direction) async throws -> TranslationOutcome {
+        try await translate(text, pair: direction.pair)
+    }
+
+    func translate(_ text: String, pair: LanguagePair) async throws -> TranslationOutcome {
         let start = events.count
 
         if residency.needsLoad {
@@ -57,7 +61,7 @@ final class TranslationService {
         }
 
         try residency.beginInference()
-        let output = try await engine.translate(text, direction.pair)
+        let output = try await engine.translate(text, pair)
         try residency.endInference()
 
         await drainEviction()
