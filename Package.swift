@@ -67,7 +67,7 @@ var targets: [Target] = [
     ),
     .testTarget(
         name: "MenubarTranslateCoreTests",
-        dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX"],
+        dependencies: ["MenubarTranslateCore", "MTEngineLlama", "MTEngineMLX", "MenubarTranslateUI"],
         path: "tests"
     ),
 ]
@@ -113,8 +113,13 @@ targets += [
         // bundle does not link mlx-swift (which also keeps default.metallib out
         // of the shipping path — see docs/architecture.md).
         name: "MenubarTranslateApp",
-        dependencies: ["MenubarTranslateCore", "MTEngineLlama"],
+        dependencies: ["MenubarTranslateUI", "MenubarTranslateCore", "MTEngineLlama"],
         path: "app"
+    ),
+    .target(
+        name: "MenubarTranslateUI",
+        dependencies: ["MenubarTranslateCore"],
+        path: "ui"
     ),
 ]
 

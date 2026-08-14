@@ -11,10 +11,8 @@ import Synchronization
 import SwiftUI
 import Translation
 import MenubarTranslateCore
+import MenubarTranslateUI
 import MTEngineLlama
-
-// MARK: - Known gap: AppViewModel isolation
-
 
 // MARK: - Shared state crossing the OSTranslationEngine seam
 
@@ -104,7 +102,7 @@ final class AppState {
     let capHolder: CapabilityHolder
 
     /// Mirrors mbt/main.swift engine-factory logic exactly (env vars, default paths).
-    init(presetKey: String) {
+    init() {
         let box = SessionBox()
         let cap = CapabilityHolder()
         self.sessionBox = box
@@ -115,12 +113,11 @@ final class AppState {
             ?? "models/weights/gemma-4-E2B_q4_0-it.gguf"
 
         // One model, one runtime (ADR 0009). MLX is a development path, not a
-        // shipping one — and it cannot load Gemma 4 E2B at all — so the app target
-        // no longer links it. `mbt --engine mlx` still exists for experiments.
+        // shipping one — mmap-backed reload, not "cannot load on MLX" (see the
+        // ADR 0009 amendment). `mbt --engine mlx` still exists for experiments.
         let engine: any TranslationEngine = LlamaEngine(modelPath: llamaPath)
 
-        let preset: MemoryPreset = presetKey == "permissive16GB"
-            ? .permissive16GB : .conservative8GB
+        let preset = MemoryPreset.forPhysicalMemory(ProcessInfo.processInfo.physicalMemory)
 
         // OS fallback (ADR 0006): translator reads the live session box; throws
         // unavailable when the session is absent or the pair token doesn't match
@@ -157,26 +154,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 struct MenubarTranslateApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    // The preset survives restarts. Hot-swap is intentionally out of scope
-    // (ADR 0009); a restart is required after changing it.
-    @AppStorage("preset") private var presetKey: String = "conservative8GB"
-
-    @State private var appState: AppState
-
-    init() {
-        // @AppStorage properties are not accessible before init completes, so read
-        // the same UserDefaults store directly to build the initial stack.
-        let pstKey = UserDefaults.standard.string(forKey: "preset") ?? "conservative8GB"
-        _appState = State(wrappedValue: AppState(presetKey: pstKey))
-    }
+    @State private var appState = AppState()
 
     var body: some Scene {
         MenuBarExtra("MenubarTranslate", systemImage: "character.bubble") {
             ContentView(
                 vm: appState.vm,
                 box: appState.sessionBox,
-                cap: appState.capHolder,
-                presetKey: $presetKey
+                cap: appState.capHolder
             )
         }
         .menuBarExtraStyle(.window)
@@ -186,15 +171,12 @@ struct MenubarTranslateApp: App {
 // MARK: - Content view
 
 struct ContentView: View {
-    // @Observable vm — SwiftUI tracks property accesses and re-renders on change.
-    let vm: AppViewModel
+    @Bindable var vm: AppViewModel
     let box: SessionBox
     let cap: CapabilityHolder
-    @Binding var presetKey: String
+    /// Local so IME composition is not reset when `@Observable` snapshot/isBusy ticks.
+    @State private var draft = ""
 
-    // Directional Translation session configurations — fixed for the app lifetime.
-    // Two configurations keep both directional sessions alive simultaneously so the
-    // OSTranslationEngine translator closure can serve either pair (ADR 0006).
     private let jaEnConfig = TranslationSession.Configuration(
         source: Locale.Language(identifier: "ja"),
         target: Locale.Language(identifier: "en")
@@ -205,101 +187,7 @@ struct ContentView: View {
     )
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-
-            // Direction toggle
-            HStack {
-                Text(vm.direction == .jaToEn ? "JA → EN" : "EN → JA")
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button {
-                    vm.direction.toggle()
-                } label: {
-                    Image(systemName: "arrow.left.arrow.right")
-                }
-                .buttonStyle(.borderless)
-                .help("Flip translation direction")
-            }
-
-            // Input
-            TextEditor(text: Binding(
-                get: { vm.input },
-                set: { vm.setInput($0) }
-            ))
-            .frame(minHeight: 60, maxHeight: 120)
-            .overlay(RoundedRectangle(cornerRadius: 4).stroke(Color.secondary.opacity(0.3)))
-
-            // Translate (⌘↩ shortcut)
-            Button("Translate") {
-                Task { @MainActor in await vm.translate() }
-            }
-            .disabled(vm.isBusy || vm.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .keyboardShortcut(.return, modifiers: .command)
-
-            // Output (selectable)
-            if !vm.output.isEmpty {
-                ScrollView {
-                    Text(vm.output)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                .frame(maxHeight: 120)
-                .padding(4)
-                .background(Color.secondary.opacity(0.08))
-                .cornerRadius(4)
-            }
-
-            // Error message
-            if let err = vm.errorMessage {
-                Text(err).font(.caption).foregroundStyle(.red)
-            }
-
-            Divider()
-
-            // Bottom bar: status · settings gear · quit
-            HStack {
-                // Snapshot: weight-lifecycle phase and memory-pressure band.
-                Text("\(vm.snapshot.phase.rawValue) · \(vm.snapshot.pressure.rawValue)")
-                    .font(.caption2).foregroundStyle(.tertiary).monospacedDigit()
-
-                Spacer()
-
-                // Preset setting — changes take effect after restart. There is no
-                // engine picker: ADR 0009 ships one model on one runtime, and the
-                // alternative would have silently loaded a different model.
-                Menu {
-                    Picker("Memory", selection: $presetKey) {
-                        Text("8 GB / conservative").tag("conservative8GB")
-                        Text("16 GB / permissive").tag("permissive16GB")
-                    }
-                    Divider()
-                    // Convenience: restart after changing settings.
-                    // _exit, not exit: see Quit button comment below.
-                    Button("Restart to apply changes") { _exit(0) }
-                } label: {
-                    Image(systemName: "gearshape").imageScale(.small)
-                }
-                .menuStyle(.borderlessButton)
-                .frame(width: 22)
-                .help("Memory-preset changes require a restart")
-
-                // _exit not exit: llama.cpp b9878 aborts in a ggml-metal static
-                // destructor at normal teardown (upstream GGML_ASSERT in
-                // ggml-metal-device.m:622), corrupting the exit code to 134.
-                // All output uses unbuffered FileHandle; skipping atexit is safe.
-                Button("Quit") { _exit(0) }.buttonStyle(.borderless).font(.caption)
-            }
-        }
-        .padding(12)
-        .frame(width: 320)
-
-        // Tick loop: advances idle-timeout and warn-debounce in ResidencyManager.
-        // The 1 s cadence is set by the residency timers, not by the capability gate:
-        // capability only changes when the user installs or removes an OS language
-        // model, so re-probing it every second is ~30x wasted work. The first probe
-        // happens at session creation in .translationTask below.
-        // ponytail: fixed 30 s cadence; make it event-driven if the framework ever
-        // exposes an availability-changed notification.
+        PanelChrome(vm: vm, draft: $draft, onQuit: quitProcess)
         .task { @MainActor in
             var ticksSinceProbe = 0
             while !Task.isCancelled {
@@ -312,16 +200,6 @@ struct ContentView: View {
                 }
             }
         }
-
-        // OS Translation sessions — action closures sleep forever so each session stays
-        // valid for the app's lifetime. Sessions are written to the box here and consumed
-        // by OSTranslationEngine's translator closure (ADR 0006).
-        //
-        // ja→en: ahead-of-time prepareTranslation() — while pressure is Normal and the
-        // model is .supported (not .installed), request a prepare once per launch so the
-        // fallback is ready before Critical arrives (ADR 0006). Probe here rather than
-        // reading cap.value: this closure runs once at session creation, before the
-        // first tick has populated the shared capability snapshot.
         .translationTask(jaEnConfig) { session in
             box.jaEnSession = session
             await probeCapability()
@@ -339,10 +217,6 @@ struct ContentView: View {
         }
     }
 
-    // MARK: Capability probe
-
-    /// Update the shared capability snapshot from the live Translation-framework status.
-    /// Called once per tick; the call is cheap (a local system query, no network).
     @MainActor
     private func probeCapability() async {
         let status = await LanguageAvailability().status(
@@ -356,3 +230,6 @@ struct ContentView: View {
         )
     }
 }
+
+/// llama.cpp b9878 aborts in a ggml-metal static destructor at normal teardown.
+private func quitProcess() { _exit(0) }

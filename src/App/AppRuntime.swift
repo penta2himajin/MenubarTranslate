@@ -27,6 +27,11 @@ public enum MemoryPreset: Sendable, Equatable {
     case conservative8GB
     /// Permissive preset for 16 GB+ (idleTimeout = 600 s, larger residency floor).
     case permissive16GB
+
+    /// 16 GB and above → permissive; below that → conservative.
+    public static func forPhysicalMemory(_ bytes: UInt64) -> MemoryPreset {
+        bytes >= 16 * 1024 * 1024 * 1024 ? .permissive16GB : .conservative8GB
+    }
 }
 
 /// A point-in-time view of the runtime state exposed to the app layer.
@@ -202,26 +207,24 @@ public final class AppRuntime {
     ///   fallback path (OS Translation framework proxy); primary weights never loaded.
     /// - All other cases → `TranslationService` path with residency management.
     ///
-    /// Supported pairs: "ja-en", "en-ja". Any other `pair.token` throws
+    /// Supported pairs: ja/en/zh in either direction. Any other `pair.token` throws
     /// `TranslationEngineError.unavailable`.
     public func translate(_ text: String, _ pair: LanguagePair) async throws -> String {
-        let direction: Direction
-        switch pair.token {
-        case "ja-en": direction = .jaToEn
-        case "en-ja": direction = .enToJa
-        default:
+        guard LanguagePair.isSupported(pair) else {
             throw TranslationEngineError.unavailable("unsupported language pair: \(pair.token)")
         }
 
         // ADR 0006 fallback routing: critical + gate open → bypass primary weights.
+        // The OS Translation-framework seam is still ja↔en only.
         if pressureMultiplexer.current == .critical,
            let check = fallbackAvailable, check(),
-           let fb = fallback {
+           let fb = fallback,
+           pair.token == "ja-en" || pair.token == "en-ja" {
             try await fb.load() // idempotent; engines guard against double-load
             return try await fb.translate(text, pair)
         }
 
-        return try await service.translate(text, direction).text
+        return try await service.translate(text, pair: pair).text
     }
 
     /// Advance time-based residency conditions (idle timeout, warn debounce) and drain

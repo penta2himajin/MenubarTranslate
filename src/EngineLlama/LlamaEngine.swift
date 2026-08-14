@@ -5,6 +5,20 @@ import MenubarTranslateCore
 // checkouts build without the xcframework.  Run
 // scripts/build-llama-xcframework.sh once to unlock the real path.
 
+public enum LlamaPrefill {
+    public static func chunkRanges(count: Int, batchSize: Int) -> [Range<Int>] {
+        guard count > 0, batchSize > 0 else { return [] }
+        var ranges: [Range<Int>] = []
+        var i = 0
+        while i < count {
+            let end = min(i + batchSize, count)
+            ranges.append(i..<end)
+            i = end
+        }
+        return ranges
+    }
+}
+
 #if canImport(llama)
 import llama
 
@@ -24,6 +38,9 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
     private let queue = DispatchQueue(label: "mbt.llama-engine")
     private var model: OpaquePointer? = nil   // llama_model*
     private var ctx: OpaquePointer? = nil     // llama_context*
+    private var lastPromptTokens: [llama_token] = []
+    private var nCtx: Int = 4096
+    private var nBatch: Int = 512
 
     public init(modelPath: String) {
         self.modelPath = modelPath
@@ -54,14 +71,12 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
                 }
 
                 var cparams = llama_context_default_params()
-                // 1024 is the shipping context (ADR 0009): a statement about the
-                // longest input the app accepts, not a tuning constant. Prompts run
-                // ~100 tokens against a 512-token generation cap, and dropping from
-                // 4096 cut committed memory and latency with byte-identical output
-                // on every model measured (docs/bench/2026-07-27-gguf-residency.md).
-                // ponytail: env-tunable so the tradeoff stays measurable.
+                // 4096: panel pastes exceed the ADR 0009 sentence-length 1024
+                // (KV fills → "failed to find a memory slot" and a truncated
+                // translation). Prefill is chunked at n_batch so compute buffers
+                // stay at 512. MBT_N_CTX still overrides.
                 cparams.n_ctx = ProcessInfo.processInfo.environment["MBT_N_CTX"]
-                    .flatMap(UInt32.init) ?? 1024
+                    .flatMap(UInt32.init) ?? 4096
                 cparams.n_batch = 512
 
                 guard let c = llama_init_from_model(m, cparams) else {
@@ -73,6 +88,8 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
 
                 self.model = m
                 self.ctx = c
+                self.nCtx = Int(cparams.n_ctx)
+                self.nBatch = Int(cparams.n_batch)
                 cont.resume()
             }
         }
@@ -100,6 +117,7 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
             queue.async { [self] in
                 if let c = self.ctx { llama_free(c); self.ctx = nil }
                 if let m = self.model { llama_model_free(m); self.model = nil }
+                self.lastPromptTokens = []
                 // ponytail: backend stays alive (ADR 0002); only weights are freed.
                 cont.resume()
             }
@@ -162,26 +180,45 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
             throw TranslationEngineError.unavailable("llama_tokenize returned \(nTokens)")
         }
         tokens = Array(tokens.prefix(Int(nTokens)))
-
-        // Reset KV cache for a clean context.
-        llama_memory_clear(llama_get_memory(ctx), true)
-
-        // Prefill: decode the prompt in one batch.
-        var batch = llama_batch_init(Int32(tokens.count), 0, 1)
-        defer { llama_batch_free(batch) }
-
-        for (i, tok) in tokens.enumerated() {
-            batch.token[i] = tok
-            batch.pos[i] = Int32(i)
-            batch.n_seq_id[i] = 1
-            batch.seq_id[i]![0] = 0
-            batch.logits[i] = 0
+        guard tokens.count < nCtx else {
+            throw TranslationEngineError.unavailable(
+                "input too long for context (\(tokens.count) tokens, n_ctx=\(nCtx))")
         }
-        batch.logits[tokens.count - 1] = 1   // only need logits for last prompt token
-        batch.n_tokens = Int32(tokens.count)
 
-        if llama_decode(ctx, batch) != 0 {
-            throw TranslationEngineError.unavailable("llama_decode (prefill) failed")
+        let mem = llama_get_memory(ctx)
+        let shared = zip(lastPromptTokens, tokens).prefix(while: { $0 == $1 }).count
+        // Keep the shared prefix in KV; drop generation + the mismatched tail.
+        // Identical prompts still need logits on the last prompt token.
+        var keep = shared
+        if keep == tokens.count { keep = max(0, keep - 1) }
+        if keep == 0 {
+            llama_memory_clear(mem, true)
+        } else if !llama_memory_seq_rm(mem, 0, Int32(keep), -1) {
+            llama_memory_clear(mem, true)
+            keep = 0
+        }
+        lastPromptTokens = tokens
+
+        let suffix = Array(tokens.dropFirst(keep))
+        for range in LlamaPrefill.chunkRanges(count: suffix.count, batchSize: nBatch) {
+            let chunk = suffix[range]
+            var batch = llama_batch_init(Int32(chunk.count), 0, 1)
+            defer { llama_batch_free(batch) }
+            let lastChunk = range.upperBound == suffix.count
+            for (i, tok) in chunk.enumerated() {
+                batch.token[i] = tok
+                batch.pos[i] = Int32(keep + range.lowerBound + i)
+                batch.n_seq_id[i] = 1
+                batch.seq_id[i]![0] = 0
+                batch.logits[i] = 0
+            }
+            if lastChunk {
+                batch.logits[chunk.count - 1] = 1
+            }
+            batch.n_tokens = Int32(chunk.count)
+            if llama_decode(ctx, batch) != 0 {
+                throw TranslationEngineError.unavailable("llama_decode (prefill) failed")
+            }
         }
 
         // Build sampler chain.
@@ -202,15 +239,16 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
             llama_sampler_chain_add(chain, llama_sampler_init_greedy())
         }
 
-        // Generate up to 512 tokens.
+        // Generate until EOS or the KV cache is full.
         var outputTokens = [llama_token]()
-        outputTokens.reserveCapacity(512)
+        let maxGen = nCtx - tokens.count
+        outputTokens.reserveCapacity(maxGen)
         var pos = Int32(tokens.count)
 
         var genBatch = llama_batch_init(1, 0, 1)
         defer { llama_batch_free(genBatch) }
 
-        for _ in 0..<512 {
+        for _ in 0..<maxGen {
             let sampled = llama_sampler_sample(chain, ctx, -1)
             // llama_vocab_is_eog covers EOS + EOT + any model-specific end tokens.
             if llama_vocab_is_eog(vocab, sampled) { break }

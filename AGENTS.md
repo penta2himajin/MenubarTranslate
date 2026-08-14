@@ -106,9 +106,22 @@ oxidtr check --model models/core.als --impl src/Core
 ## Git Conventions
 
 - Conventional Commits. Add project scopes (e.g. `feat(runtime):`) as they emerge.
-- Engineering docs and every `docs/decisions/*.md` ADR are **English-only**
-  (`docs/i18n-policy.md`). `README.md` may carry a `README.ja.md` twin.
 
+## Session Handoff
+
+Long-running workstreams use GitHub issues for cross-session continuity. See `docs/handoff-protocol.md` for the full protocol.
+
+- Label: `session-handoff`
+- One issue per workstream (not per session)
+- On session start, read the relevant handoff issue and confirm the **Next action** with the user before executing.
+
+## Internationalisation
+
+If this project ships a Japanese-facing entry point, follow `docs/i18n-policy.md`:
+
+- Translations are suffix files (`README.ja.md` next to `README.md`); no language directories.
+- Only `README.md` and the user-facing introduction tier of `docs/` are in scope. Engineering docs and ADRs stay English-only.
+- Each translated file carries a `> Source: <name>.md @ <sha>` header. PRs are never blocked on translation parity.
 
 ---
 
@@ -125,6 +138,10 @@ All implementation work proceeds in this cycle:
 3. **Refactor**: tidy up while keeping tests green.
 
 When a test fails, fix the production code — do not delete, skip, or weaken the test.
+
+### Measure, Don't Conjecture
+
+Base decisions on observed data, not assumptions. Before optimising, claiming a bottleneck, or asserting that something is slow or broken, measure it — profile, benchmark, log, or reproduce. When you report a cause, cite the measurement that supports it.
 
 ### Git Conventions
 
