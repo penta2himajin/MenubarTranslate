@@ -25,6 +25,7 @@ public struct PanelChrome: View {
 
     private var pickerLanguages: [AppLanguage] { AppLanguage.pickerLanguages() }
     private let fieldHeight: CGFloat = 120
+    private let fieldInset: CGFloat = 8
 
     public var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -50,7 +51,7 @@ public struct PanelChrome: View {
             }
 
             IMESourceEditor(text: $draft, onStableChange: { vm.scheduleLiveTranslate($0) })
-                .padding(8)
+                .padding(fieldInset)
                 .frame(minHeight: fieldHeight, maxHeight: fieldHeight)
                 .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 6))
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.white, lineWidth: 1.5))
@@ -62,11 +63,12 @@ public struct PanelChrome: View {
                         .textSelection(.enabled)
                         .foregroundStyle(vm.output.isEmpty ? .tertiary : .primary)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.trailing, fieldScrollerGutter())
                         .padding(.bottom, 28)
                         .accessibilityIdentifier("translation-output")
                         .accessibilityValue(vm.output)
                 }
-                .padding(8)
+                .padding(fieldInset)
                 Button("Copy") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(vm.output, forType: .string)

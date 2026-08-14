@@ -72,8 +72,9 @@ of the LLM factory this engine uses, not of MLX.** The decision stands on the
 other grounds — mmap-backed load, packaging, and the runtime's own history in
 ADR 0008 — but not on impossibility.
 
-**3. `n_ctx` is 1024.** This is a statement about the longest input the app
-accepts, not a tuning constant.
+**3. `n_ctx` is 4096.** 1024 was enough for the sentence-length bench set;
+panel pastes are not. Prefill is chunked at `n_batch = 512` so compute
+buffers do not scale with context. `MBT_N_CTX` overrides for benches.
 
 **4. There is no local fallback model.** Degradation under `Critical` pressure
 remains exactly what ADR 0006 specifies: lean-load, evict-after-use, and the
@@ -179,3 +180,12 @@ cold load on MiLMMT-1B, 1546 vs 366 ms), which ADR 0003/0004's evict-and-reload
 design is built around; the MTP drafter is an additional resident model against
 an 8 GB target; and the MLX path needs an Xcode build plus two carried upstream
 patches.
+
+## Amendment (2026-08-14) — `n_ctx` 1024 truncated panel pastes
+
+Decision 3 originally set `n_ctx = 1024` because the 16-sentence bench set
+used ~100-token prompts and a 512-token generation cap. Real menu-bar pastes
+filled the KV cache mid-decode (`decode: failed to find a memory slot for
+batch of size 1`) and returned a truncated translation. The default is 4096;
+generation now runs until EOS or the remaining context, not a fixed 512.
+`MBT_N_CTX=1024` still reproduces the bench configuration.

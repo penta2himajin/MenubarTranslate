@@ -14,15 +14,20 @@ struct IMESourceEditor: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.borderType = .noBorder
         scroll.drawsBackground = false
-        let tv = NSTextView()
+        let tv = SourceTextView()
         tv.delegate = context.coordinator
         tv.isRichText = false
         tv.font = .systemFont(ofSize: NSFont.systemFontSize)
         tv.backgroundColor = .clear
         tv.textContainerInset = .zero
         tv.textContainer?.lineFragmentPadding = 0
+        tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = false
-        tv.textContainer?.widthTracksTextView = true
+        tv.textContainer?.widthTracksTextView = false
+        tv.trailingGutter = fieldScrollerGutter()
+        tv.minSize = NSSize(width: 0, height: 0)
+        tv.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
+        tv.autoresizingMask = [.width]
         tv.string = text
         scroll.documentView = tv
         context.coordinator.textView = tv
@@ -30,7 +35,8 @@ struct IMESourceEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let tv = scroll.documentView as? NSTextView else { return }
+        guard let tv = scroll.documentView as? SourceTextView else { return }
+        tv.trailingGutter = fieldScrollerGutter()
         if !tv.hasMarkedText(), tv.string != text {
             tv.string = text
         }
@@ -47,5 +53,28 @@ struct IMESourceEditor: NSViewRepresentable {
             parent.text = tv.string
             parent.onStableChange(tv.string)
         }
+    }
+}
+
+/// Right-side gap so overlay scrollers do not sit on glyphs.
+func fieldScrollerGutter() -> CGFloat {
+    NSScroller.scrollerWidth(for: .regular, scrollerStyle: NSScroller.preferredScrollerStyle) + 4
+}
+
+private final class SourceTextView: NSTextView {
+    var trailingGutter: CGFloat = 0 {
+        didSet { if oldValue != trailingGutter { invalidateTextContainerWidth() } }
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        invalidateTextContainerWidth()
+    }
+
+    private func invalidateTextContainerWidth() {
+        textContainer?.containerSize = NSSize(
+            width: max(1, frame.width - trailingGutter),
+            height: .greatestFiniteMagnitude
+        )
     }
 }
