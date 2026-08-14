@@ -100,6 +100,8 @@ final class AppState {
     let vm: AppViewModel
     let sessionBox: SessionBox
     let capHolder: CapabilityHolder
+    private let runtime: AppRuntime
+    private var httpServer: LoopbackHTTPServer?
 
     /// Mirrors mbt/main.swift engine-factory logic exactly (env vars, default paths).
     init() {
@@ -136,6 +138,33 @@ final class AppState {
             fallbackAvailable: { cap.value.isAvailable }
         )
         self.vm = AppViewModel(runtime: runtime)
+        self.runtime = runtime
+        if LoopbackPreference.isEnabled() {
+            startHTTPLoopback()
+        }
+    }
+
+    func setHTTPLoopbackEnabled(_ on: Bool) {
+        LoopbackPreference.setEnabled(on)
+        if on {
+            startHTTPLoopback()
+        } else {
+            httpServer?.stop()
+            httpServer = nil
+            print("immersive http off")
+        }
+    }
+
+    private func startHTTPLoopback() {
+        guard httpServer == nil else { return }
+        do {
+            let runtime = runtime
+            httpServer = try LoopbackHTTPServer(port: ImmersiveTranslate.port()) { text, pair in
+                try await runtime.translate(text, pair)
+            }
+        } catch {
+            print("immersive http: \(error)")
+        }
     }
 }
 
@@ -161,7 +190,8 @@ struct MenubarTranslateApp: App {
             ContentView(
                 vm: appState.vm,
                 box: appState.sessionBox,
-                cap: appState.capHolder
+                cap: appState.capHolder,
+                onToggleHTTPLoopback: { appState.setHTTPLoopbackEnabled($0) }
             )
         }
         .menuBarExtraStyle(.window)
@@ -174,6 +204,7 @@ struct ContentView: View {
     @Bindable var vm: AppViewModel
     let box: SessionBox
     let cap: CapabilityHolder
+    var onToggleHTTPLoopback: (Bool) -> Void
     /// Local so IME composition is not reset when `@Observable` snapshot/isBusy ticks.
     @State private var draft = ""
 
@@ -187,7 +218,12 @@ struct ContentView: View {
     )
 
     var body: some View {
-        PanelChrome(vm: vm, draft: $draft, onQuit: quitProcess)
+        PanelChrome(
+            vm: vm,
+            draft: $draft,
+            onQuit: quitProcess,
+            onToggleHTTPLoopback: onToggleHTTPLoopback
+        )
         .task { @MainActor in
             var ticksSinceProbe = 0
             while !Task.isCancelled {

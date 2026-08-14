@@ -180,4 +180,43 @@ struct AppRuntimeTests {
         await f.runtime.tick()
         #expect(f.runtime.snapshot.phase == .ready)
     }
+
+    @Test("overlapping translates queue instead of IllegalTransition")
+    func overlappingTranslatesSerialize() async throws {
+        let clock = ManualClock()
+        let pressure = FakePressureSource()
+        let engine = SlowFakeEngine()
+        let runtime = AppRuntime(
+            engine: engine,
+            preset: .conservative8GB,
+            clock: clock,
+            pressureSource: pressure
+        )
+        async let a = runtime.translate("one", .jaToEn)
+        async let b = runtime.translate("two", .jaToEn)
+        let ra = try await a
+        let rb = try await b
+        #expect(ra == "[ja-en] one")
+        #expect(rb == "[ja-en] two")
+        #expect(engine.maxConcurrent == 1)
+    }
+}
+
+private final class SlowFakeEngine: TranslationEngine, @unchecked Sendable {
+    private(set) var maxConcurrent = 0
+    private var inflight = 0
+    private var loaded = false
+
+    func load() async throws { loaded = true }
+
+    func translate(_ text: String, _ pair: LanguagePair) async throws -> String {
+        guard loaded else { throw TranslationEngineError.notLoaded }
+        inflight += 1
+        maxConcurrent = max(maxConcurrent, inflight)
+        try await Task.sleep(for: .milliseconds(30))
+        inflight -= 1
+        return FakeEngine.echo(text, pair)
+    }
+
+    func evict() async { loaded = false }
 }

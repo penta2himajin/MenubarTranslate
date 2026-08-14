@@ -27,6 +27,7 @@ final class TranslationService {
     private var evictionPending = false
     /// Append-only transition log; a per-call slice becomes `TranslationOutcome.trace`.
     private var events: [ResidencyEvent] = []
+    private var translateTail: Task<Void, Never> = Task {}
 
     init(
         engine: TranslationEngine,
@@ -47,6 +48,16 @@ final class TranslationService {
     }
 
     func translate(_ text: String, pair: LanguagePair) async throws -> TranslationOutcome {
+        let previous = translateTail
+        let work = Task { @MainActor in
+            await previous.value
+            return try await self.performTranslate(text, pair: pair)
+        }
+        translateTail = Task { _ = try? await work.value }
+        return try await work.value
+    }
+
+    private func performTranslate(_ text: String, pair: LanguagePair) async throws -> TranslationOutcome {
         let start = events.count
 
         if residency.needsLoad {
