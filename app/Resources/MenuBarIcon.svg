@@ -1,0 +1,42 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none">
+  <!--
+    Menu-bar template: speech bubble wrapping Aぁ.
+    Solid rim 3 o'clock → 12 o'clock; dashed 12 → 3 with a wide →.
+  -->
+  <path
+    stroke="black"
+    stroke-width="1.7"
+    stroke-linecap="round"
+    stroke-linejoin="round"
+    d="M 26 16.4
+       A 10 10 0 1 1 16 6.4
+       M 9.2 23.6 L 7.4 27.2 L 12.2 24.2"
+  />
+  <path
+    stroke="black"
+    stroke-width="1.7"
+    stroke-linecap="round"
+    stroke-dasharray="2.1 2.4"
+    d="M 16 6.4 A 10 10 0 0 1 24.6 13.2"
+  />
+  <path
+    fill="black"
+    d="M 24.2 12.2 L 27.1 16.6 L 22.4 16.05 Z"
+  />
+  <text
+    x="14.2" y="19.6"
+    fill="black"
+    font-family="system-ui, -apple-system, sans-serif"
+    font-size="11.5"
+    font-weight="700"
+    text-anchor="middle"
+  >A</text>
+  <text
+    x="21.4" y="21.4"
+    fill="black"
+    font-family="system-ui, -apple-system, sans-serif"
+    font-size="6.2"
+    font-weight="700"
+    text-anchor="middle"
+  >ぁ</text>
+</svg>

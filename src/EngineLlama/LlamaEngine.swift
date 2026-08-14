@@ -46,7 +46,6 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
 
     public init(modelPath: String) {
         self.modelPath = modelPath
-        BackendLifetime.ensureInitialised()
     }
 
     // MARK: - TranslationEngine
@@ -56,6 +55,8 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
             queue.async { [self] in
                 // Already loaded — idempotent.
                 if self.model != nil { cont.resume(); return }
+
+                BackendLifetime.ensureInitialised()
 
                 guard FileManager.default.fileExists(atPath: self.modelPath) else {
                     cont.resume(throwing: TranslationEngineError.unavailable(

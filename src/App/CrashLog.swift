@@ -25,6 +25,15 @@ public enum CrashLog {
             && (filename.hasSuffix(".ips") || filename.hasSuffix(".crash"))
     }
 
+    public static func defaultDiagnosticReportDirectories(
+        fileManager: FileManager = .default
+    ) -> [URL] {
+        let user = fileManager.urls(for: .libraryDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Logs/DiagnosticReports", isDirectory: true)
+        let system = URL(fileURLWithPath: "/Library/Logs/DiagnosticReports", isDirectory: true)
+        return [user, system]
+    }
+
     public static func harvest(
         from diagnosticDir: URL,
         into destDir: URL,
@@ -44,6 +53,16 @@ public enum CrashLog {
         }
     }
 
+    public static func harvestAll(
+        from diagnosticDirs: [URL],
+        into destDir: URL,
+        fileManager: FileManager = .default
+    ) throws {
+        for dir in diagnosticDirs {
+            try harvest(from: dir, into: destDir, fileManager: fileManager)
+        }
+    }
+
     public static func prepareConsoleLog(
         at url: URL,
         fileManager: FileManager = .default
@@ -57,7 +76,25 @@ public enum CrashLog {
         try fileManager.moveItem(at: url, to: bak)
     }
 
-    /// Redirects stdio, records uncaught NSExceptions, harvests Crash Reporter files.
+    public static func appendCrashText(
+        _ text: String,
+        directory: URL? = nil,
+        fileManager: FileManager = .default
+    ) throws {
+        let dir = directory ?? logsDirectory(fileManager: fileManager)
+        try fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
+        let url = dir.appendingPathComponent("last-crash.log")
+        if !fileManager.fileExists(atPath: url.path) {
+            fileManager.createFile(atPath: url.path, contents: nil)
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        _ = try handle.seekToEnd()
+        try handle.write(contentsOf: Data(text.utf8))
+    }
+
+    /// Redirects stdio, records uncaught NSExceptions and fatal signals,
+    /// harvests Crash Reporter files.
     public static func install(fileManager: FileManager = .default) {
         let dir = logsDirectory(fileManager: fileManager)
         try? fileManager.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -66,14 +103,20 @@ public enum CrashLog {
         try? prepareConsoleLog(at: console, fileManager: fileManager)
         redirectStdio(to: console)
 
+        let crashNote = dir.appendingPathComponent("last-crash.log")
+        openCrashNoteFD(at: crashNote)
+
         NSSetUncaughtExceptionHandler { exception in
             CrashLog.recordException(exception)
         }
         UserDefaults.standard.set(true, forKey: "NSApplicationCrashOnExceptions")
+        installFatalSignalHandlers()
 
-        let reports = fileManager.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Logs/DiagnosticReports", isDirectory: true)
-        try? harvest(from: reports, into: dir, fileManager: fileManager)
+        try? harvestAll(
+            from: defaultDiagnosticReportDirectories(fileManager: fileManager),
+            into: dir,
+            fileManager: fileManager
+        )
     }
 
     private static func redirectStdio(to url: URL) {
@@ -84,7 +127,11 @@ public enum CrashLog {
         if fd != STDERR_FILENO, fd != STDOUT_FILENO {
             close(fd)
         }
-        let stamp = "--- \(ISO8601DateFormatter().string(from: Date())) pid=\(getpid()) ---\n"
+        setvbuf(stdout, nil, _IONBF, 0)
+        setvbuf(stderr, nil, _IONBF, 0)
+        let exe = CommandLine.arguments.first ?? ""
+        let stamp =
+            "--- \(ISO8601DateFormatter().string(from: Date())) pid=\(getpid()) exe=\(exe) ---\n"
         FileHandle.standardError.write(Data(stamp.utf8))
     }
 
@@ -94,13 +141,44 @@ public enum CrashLog {
         \(exception.callStackSymbols.joined(separator: "\n"))
 
         """
-        let url = logsDirectory().appendingPathComponent("last-crash.log")
-        if !FileManager.default.fileExists(atPath: url.path) {
-            FileManager.default.createFile(atPath: url.path, contents: nil)
-        }
-        guard let handle = try? FileHandle(forWritingTo: url) else { return }
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: Data(body.utf8))
+        try? appendCrashText(body)
     }
+
+    // MARK: - Fatal signals (ggml abort, Swift fatalError)
+
+    #if canImport(Darwin)
+    private static func openCrashNoteFD(at url: URL) {
+        mbtCrashNoteFD = open(url.path, O_WRONLY | O_CREAT | O_APPEND, 0o644)
+    }
+
+    private static func installFatalSignalHandlers() {
+        signal(SIGABRT, mbtFatalSignal)
+        signal(SIGSEGV, mbtFatalSignal)
+        signal(SIGBUS, mbtFatalSignal)
+        signal(SIGILL, mbtFatalSignal)
+        signal(SIGTRAP, mbtFatalSignal)
+    }
+    #else
+    private static func openCrashNoteFD(at url: URL) {}
+    private static func installFatalSignalHandlers() {}
+    #endif
 }
+
+#if canImport(Darwin)
+/// Written only from `install`; read from the signal handler (async-signal-safe).
+nonisolated(unsafe) private var mbtCrashNoteFD: Int32 = -1
+
+private let mbtFatalSignalLine: StaticString =
+    "fatal signal — see last-crash.log and console.log\n"
+
+private let mbtFatalSignal: @convention(c) (Int32) -> Void = { sig in
+    let ptr = UnsafeRawPointer(mbtFatalSignalLine.utf8Start)
+    let n = mbtFatalSignalLine.utf8CodeUnitCount
+    _ = write(STDERR_FILENO, ptr, n)
+    if mbtCrashNoteFD >= 0 {
+        _ = write(mbtCrashNoteFD, ptr, n)
+        _ = fsync(mbtCrashNoteFD)
+    }
+    _exit(128 + sig)
+}
+#endif

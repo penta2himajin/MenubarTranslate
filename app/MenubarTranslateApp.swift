@@ -111,8 +111,8 @@ final class AppState {
         self.capHolder = cap
 
         // Resolve the model path from environment; mirrors mbt/main.swift.
-        let llamaPath = ProcessInfo.processInfo.environment["MBT_LLAMA_GGUF"]
-            ?? "models/weights/gemma-4-E2B_q4_0-it.gguf"
+        let llamaPath = ModelPath.llamaGGUF()
+        FileHandle.standardError.write(Data("gguf=\(llamaPath)\n".utf8))
 
         // One model, one runtime (ADR 0009). MLX is a development path, not a
         // shipping one — mmap-backed reload, not "cannot load on MLX" (see the
@@ -170,9 +170,74 @@ final class AppState {
 
 // MARK: - App delegate
 
+@MainActor
 private final class AppDelegate: NSObject, NSApplicationDelegate {
+    let appState = AppState()
+    private var statusItem: NSStatusItem?
+    private var popover: NSPopover?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)   // no Dock icon; menu bar only
+        installStatusItem()
+        FileHandle.standardError.write(Data("menu bar ready pid=\(getpid())\n".utf8))
+    }
+
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication,
+        hasVisibleWindows flag: Bool
+    ) -> Bool {
+        FileHandle.standardError.write(
+            Data("reopen hasVisibleWindows=\(flag)\n".utf8)
+        )
+        showPanel()
+        return true
+    }
+
+    private func installStatusItem() {
+        let image = MenuBarIcon.loadFromBundles([Bundle.module, Bundle.main])
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        item.button?.image = image
+        item.button?.imagePosition = .imageOnly
+        item.button?.toolTip = "MenubarTranslate"
+        item.button?.target = self
+        item.button?.action = #selector(togglePanel)
+        statusItem = item
+
+        let host = NSHostingController(
+            rootView: ContentView(
+                vm: appState.vm,
+                box: appState.sessionBox,
+                cap: appState.capHolder,
+                onToggleHTTPLoopback: { [appState] on in
+                    appState.setHTTPLoopbackEnabled(on)
+                }
+            )
+        )
+        host.sizingOptions = [.preferredContentSize]
+        let popover = NSPopover()
+        popover.behavior = .transient
+        popover.animates = false
+        popover.contentViewController = host
+        self.popover = popover
+
+        FileHandle.standardError.write(
+            Data("status item \(Int(image.size.width))x\(Int(image.size.height)) template=\(image.isTemplate)\n".utf8)
+        )
+    }
+
+    @objc private func togglePanel() {
+        guard let popover else { return }
+        if popover.isShown {
+            popover.performClose(nil)
+        } else {
+            showPanel()
+        }
+    }
+
+    private func showPanel() {
+        guard let button = statusItem?.button, let popover else { return }
+        NSApp.activate()
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
     }
 }
 
@@ -183,18 +248,10 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 struct MenubarTranslateApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    @State private var appState = AppState()
-
     var body: some Scene {
-        MenuBarExtra("MenubarTranslate", systemImage: "character.bubble") {
-            ContentView(
-                vm: appState.vm,
-                box: appState.sessionBox,
-                cap: appState.capHolder,
-                onToggleHTTPLoopback: { appState.setHTTPLoopbackEnabled($0) }
-            )
-        }
-        .menuBarExtraStyle(.window)
+        // Status item is installed in AppDelegate. Settings is the required Scene
+        // without putting a second (1024pt) glyph on the menu bar via MenuBarExtra.
+        Settings { EmptyView() }
     }
 }
 
