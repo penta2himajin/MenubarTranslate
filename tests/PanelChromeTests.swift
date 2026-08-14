@@ -22,8 +22,7 @@ private func makeVM() -> AppViewModel {
 private func host(_ vm: AppViewModel, draft: String = "") -> NSHostingView<PanelChrome> {
     let view = PanelChrome(
         vm: vm,
-        draft: .constant(draft),
-        presetKey: .constant("conservative8GB")
+        draft: .constant(draft)
     )
     let host = NSHostingView(rootView: view)
     host.frame = NSRect(x: 0, y: 0, width: 380, height: 640)

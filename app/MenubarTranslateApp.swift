@@ -102,7 +102,7 @@ final class AppState {
     let capHolder: CapabilityHolder
 
     /// Mirrors mbt/main.swift engine-factory logic exactly (env vars, default paths).
-    init(presetKey: String) {
+    init() {
         let box = SessionBox()
         let cap = CapabilityHolder()
         self.sessionBox = box
@@ -117,8 +117,7 @@ final class AppState {
         // ADR 0009 amendment). `mbt --engine mlx` still exists for experiments.
         let engine: any TranslationEngine = LlamaEngine(modelPath: llamaPath)
 
-        let preset: MemoryPreset = presetKey == "permissive16GB"
-            ? .permissive16GB : .conservative8GB
+        let preset = MemoryPreset.forPhysicalMemory(ProcessInfo.processInfo.physicalMemory)
 
         // OS fallback (ADR 0006): translator reads the live session box; throws
         // unavailable when the session is absent or the pair token doesn't match
@@ -155,26 +154,14 @@ private final class AppDelegate: NSObject, NSApplicationDelegate {
 struct MenubarTranslateApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
 
-    // The preset survives restarts. Hot-swap is intentionally out of scope
-    // (ADR 0009); a restart is required after changing it.
-    @AppStorage("preset") private var presetKey: String = "conservative8GB"
-
-    @State private var appState: AppState
-
-    init() {
-        // @AppStorage properties are not accessible before init completes, so read
-        // the same UserDefaults store directly to build the initial stack.
-        let pstKey = UserDefaults.standard.string(forKey: "preset") ?? "conservative8GB"
-        _appState = State(wrappedValue: AppState(presetKey: pstKey))
-    }
+    @State private var appState = AppState()
 
     var body: some Scene {
         MenuBarExtra("MenubarTranslate", systemImage: "character.bubble") {
             ContentView(
                 vm: appState.vm,
                 box: appState.sessionBox,
-                cap: appState.capHolder,
-                presetKey: $presetKey
+                cap: appState.capHolder
             )
         }
         .menuBarExtraStyle(.window)
@@ -187,7 +174,6 @@ struct ContentView: View {
     @Bindable var vm: AppViewModel
     let box: SessionBox
     let cap: CapabilityHolder
-    @Binding var presetKey: String
     /// Local so IME composition is not reset when `@Observable` snapshot/isBusy ticks.
     @State private var draft = ""
 
@@ -201,7 +187,7 @@ struct ContentView: View {
     )
 
     var body: some View {
-        PanelChrome(vm: vm, draft: $draft, presetKey: $presetKey, onQuit: quitProcess)
+        PanelChrome(vm: vm, draft: $draft, onQuit: quitProcess)
         .task { @MainActor in
             var ticksSinceProbe = 0
             while !Task.isCancelled {

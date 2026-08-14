@@ -27,6 +27,11 @@ public enum MemoryPreset: Sendable, Equatable {
     case conservative8GB
     /// Permissive preset for 16 GB+ (idleTimeout = 600 s, larger residency floor).
     case permissive16GB
+
+    /// 16 GB and above → permissive; below that → conservative.
+    public static func forPhysicalMemory(_ bytes: UInt64) -> MemoryPreset {
+        bytes >= 16 * 1024 * 1024 * 1024 ? .permissive16GB : .conservative8GB
+    }
 }
 
 /// A point-in-time view of the runtime state exposed to the app layer.

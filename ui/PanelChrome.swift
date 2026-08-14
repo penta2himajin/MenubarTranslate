@@ -7,7 +7,6 @@ import MenubarTranslateCore
 public struct PanelChrome: View {
     @Bindable public var vm: AppViewModel
     @Binding public var draft: String
-    @Binding public var presetKey: String
     public var onQuit: () -> Void
 
     @State private var historyOpen = false
@@ -17,12 +16,10 @@ public struct PanelChrome: View {
     public init(
         vm: AppViewModel,
         draft: Binding<String>,
-        presetKey: Binding<String>,
         onQuit: @escaping () -> Void = {}
     ) {
         self.vm = vm
         self._draft = draft
-        self._presetKey = presetKey
         self.onQuit = onQuit
     }
 
@@ -105,19 +102,6 @@ public struct PanelChrome: View {
                     .accessibilityIdentifier("status-line")
                 Spacer()
                 historyButton
-                Menu {
-                    Picker("Memory", selection: $presetKey) {
-                        Text("8 GB / conservative").tag("conservative8GB")
-                        Text("16 GB / permissive").tag("permissive16GB")
-                    }
-                    Divider()
-                    Button("Quit to apply changes", action: onQuit)
-                } label: {
-                    Image(systemName: "gearshape")
-                }
-                .menuIndicator(.hidden)
-                .buttonStyle(.borderless)
-                .help("Memory-preset changes apply on next launch")
                 Button("Quit", action: onQuit)
                     .buttonStyle(.borderless)
                     .font(.caption)
