@@ -159,8 +159,8 @@ final class AppState {
         guard httpServer == nil else { return }
         do {
             let runtime = runtime
-            httpServer = try LoopbackHTTPServer(port: ImmersiveTranslate.port()) { text, pair in
-                try await runtime.translate(text, pair)
+            httpServer = try LoopbackHTTPServer(port: ImmersiveTranslate.port()) { items in
+                try await runtime.translateMany(items)
             }
         } catch {
             print("immersive http: \(error)")

@@ -227,6 +227,32 @@ public final class AppRuntime {
         return try await service.translate(text, pair: pair).text
     }
 
+    public func translateMany(_ items: [(String, LanguagePair)]) async throws -> [String] {
+        if items.isEmpty { return [] }
+        for item in items {
+            guard LanguagePair.isSupported(item.1) else {
+                throw TranslationEngineError.unavailable("unsupported language pair: \(item.1.token)")
+            }
+        }
+        if pressureMultiplexer.current == .critical,
+           let check = fallbackAvailable, check(),
+           let fb = fallback {
+            var out: [String] = []
+            out.reserveCapacity(items.count)
+            for item in items {
+                let pair = item.1
+                if pair.token == "ja-en" || pair.token == "en-ja" {
+                    try await fb.load()
+                    out.append(try await fb.translate(item.0, pair))
+                } else {
+                    out.append(try await service.translate(item.0, pair: pair).text)
+                }
+            }
+            return out
+        }
+        return try await service.translateMany(items).texts
+    }
+
     /// Advance time-based residency conditions (idle timeout, warn debounce) and drain
     /// any resulting eviction. The UI layer owns the repeating timer; this is the tick
     /// target. Never loads weights.

@@ -28,7 +28,21 @@ public enum ImmersiveTranslate {
 
     public static func handlePOST(
         body: Data,
-        translate: (String, LanguagePair) async throws -> String
+        translate: @escaping (String, LanguagePair) async throws -> String
+    ) async -> HTTPResult {
+        await handlePOST(body: body) { items in
+            var out: [String] = []
+            out.reserveCapacity(items.count)
+            for item in items {
+                out.append(try await translate(item.0, item.1))
+            }
+            return out
+        }
+    }
+
+    public static func handlePOST(
+        body: Data,
+        translateMany: ([(String, LanguagePair)]) async throws -> [String]
     ) async -> HTTPResult {
         let payload = HTTPPayload.unwrap(body)
         guard let obj = jsonObject(from: payload) else {
@@ -42,14 +56,14 @@ public enum ImmersiveTranslate {
             return errorResult(400, "invalid json")
         }
         if obj["messages"] != nil {
-            return await handleChat(obj, translate: translate)
+            return await handleChat(obj, translateMany: translateMany)
         }
-        return await handleCustom(obj, translate: translate)
+        return await handleCustom(obj, translateMany: translateMany)
     }
 
     private static func handleCustom(
         _ obj: [String: Any],
-        translate: (String, LanguagePair) async throws -> String
+        translateMany: ([(String, LanguagePair)]) async throws -> [String]
     ) async -> HTTPResult {
         guard let req = Request.parse(obj) else {
             return errorResult(400, "invalid json")
@@ -64,29 +78,39 @@ public enum ImmersiveTranslate {
             return errorResult(400, "unsupported language pair: \(req.source_lang)-\(req.target_lang)")
         }
 
-        var items: [Translation] = []
-        items.reserveCapacity(req.text_list.count)
-        for text in req.text_list {
+        var slots: [Translation?] = Array(repeating: nil, count: req.text_list.count)
+        var jobs: [(Int, String, LanguagePair)] = []
+        for (i, text) in req.text_list.enumerated() {
             let source = fixedSource ?? AppLanguage.detect(text)
             guard let source else {
-                items.append(Translation(detected_source_lang: "auto", text: text))
+                slots[i] = Translation(detected_source_lang: "auto", text: text)
                 continue
             }
             if source == target {
-                items.append(Translation(detected_source_lang: source.code, text: text))
+                slots[i] = Translation(detected_source_lang: source.code, text: text)
                 continue
             }
             let pair = LanguagePair.named(source: source, target: target)
             guard LanguagePair.isSupported(pair) else {
                 return errorResult(400, "unsupported language pair: \(pair.token)")
             }
+            jobs.append((i, text, pair))
+        }
+        if !jobs.isEmpty {
             do {
-                let out = try await translate(text, pair)
-                items.append(Translation(detected_source_lang: source.code, text: out))
+                let outs = try await translateMany(jobs.map { ($0.1, $0.2) })
+                guard outs.count == jobs.count else {
+                    return errorResult(500, "batch size mismatch")
+                }
+                for (j, job) in jobs.enumerated() {
+                    slots[job.0] = Translation(
+                        detected_source_lang: job.2.sourceCode, text: outs[j])
+                }
             } catch {
                 return errorResult(500, String(describing: error))
             }
         }
+        let items = slots.compactMap { $0 }
         do {
             let data = try JSONEncoder().encode(Response(translations: items))
             return HTTPResult(status: 200, body: data)
@@ -127,7 +151,7 @@ public enum ImmersiveTranslate {
 
     private static func handleChat(
         _ obj: [String: Any],
-        translate: (String, LanguagePair) async throws -> String
+        translateMany: ([(String, LanguagePair)]) async throws -> [String]
     ) async -> HTTPResult {
         let messages = obj["messages"] as? [[String: Any]] ?? []
         let system = messages.first { ($0["role"] as? String) == "system" }?["content"] as? String ?? ""
@@ -142,26 +166,21 @@ public enum ImmersiveTranslate {
         if let first = parts.first {
             parts[0] = stripInstruction(first)
         }
-        var translated: [String] = []
-        translated.reserveCapacity(parts.count)
-        for part in parts {
-            let custom = await handleCustom(
-                [
-                    "source_lang": "auto",
-                    "target_lang": target.code,
-                    "text_list": [part],
-                ],
-                translate: translate
-            )
-            guard custom.status == 200,
-                  let obj = jsonObject(from: custom.body),
-                  let items = obj["translations"] as? [[String: Any]],
-                  let text = items.first?["text"] as? String
-            else {
-                return custom
-            }
-            translated.append(text)
+        let custom = await handleCustom(
+            [
+                "source_lang": "auto",
+                "target_lang": target.code,
+                "text_list": parts,
+            ],
+            translateMany: translateMany
+        )
+        guard custom.status == 200,
+              let obj = jsonObject(from: custom.body),
+              let rows = obj["translations"] as? [[String: Any]]
+        else {
+            return custom
         }
+        let translated = rows.map { $0["text"] as? String ?? "" }
         let content = translated.joined(separator: "\n\n%%\n\n")
         let reply: [String: Any] = [
             "choices": [

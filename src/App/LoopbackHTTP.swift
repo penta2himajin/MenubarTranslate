@@ -5,13 +5,27 @@ import Network
 /// Binds `127.0.0.1` / `::1` only. Translation still goes through `AppRuntime`.
 public final class LoopbackHTTPServer: @unchecked Sendable {
     private let listener: NWListener
-    private let translate: @MainActor @Sendable (String, LanguagePair) async throws -> String
+    private let translateMany: @MainActor @Sendable ([(String, LanguagePair)]) async throws -> [String]
 
-    public init(
+    public convenience init(
         port: UInt16,
         translate: @escaping @MainActor @Sendable (String, LanguagePair) async throws -> String
     ) throws {
-        self.translate = translate
+        try self.init(port: port) { items in
+            var out: [String] = []
+            out.reserveCapacity(items.count)
+            for item in items {
+                out.append(try await translate(item.0, item.1))
+            }
+            return out
+        }
+    }
+
+    public init(
+        port: UInt16,
+        translateMany: @escaping @MainActor @Sendable ([(String, LanguagePair)]) async throws -> [String]
+    ) throws {
+        self.translateMany = translateMany
         let params = NWParameters.tcp
         params.requiredInterfaceType = .loopback
         params.allowLocalEndpointReuse = true
@@ -73,10 +87,14 @@ public final class LoopbackHTTPServer: @unchecked Sendable {
         httpLog(
             "post \(request.body.count) bytes hex[\(HTTPPayload.hexPrefix(request.body))]"
         )
-        let result = await ImmersiveTranslate.handlePOST(body: request.body) { text, pair in
-            try await self.translate(text, pair)
+        let t0 = Date()
+        var n = 0
+        let result = await ImmersiveTranslate.handlePOST(body: request.body) { items in
+            n = items.count
+            return try await self.translateMany(items)
         }
-        httpLog("status \(result.status)")
+        let ms = Int(Date().timeIntervalSince(t0) * 1000)
+        httpLog("status \(result.status) n=\(n) ms=\(ms)")
         reply(connection, status: result.status, body: result.body)
     }
 

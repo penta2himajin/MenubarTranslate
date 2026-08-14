@@ -40,7 +40,9 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
     private var ctx: OpaquePointer? = nil     // llama_context*
     private var lastPromptTokens: [llama_token] = []
     private var nCtx: Int = 4096
+    private var nCtxSeq: Int = 4096
     private var nBatch: Int = 512
+    private var nSeqMax: Int = 8
 
     public init(modelPath: String) {
         self.modelPath = modelPath
@@ -75,9 +77,17 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
                 // (KV fills → "failed to find a memory slot" and a truncated
                 // translation). Prefill is chunked at n_batch so compute buffers
                 // stay at 512. MBT_N_CTX still overrides.
-                cparams.n_ctx = ProcessInfo.processInfo.environment["MBT_N_CTX"]
+                let perSeq = ProcessInfo.processInfo.environment["MBT_N_CTX"]
                     .flatMap(UInt32.init) ?? 4096
+                self.nSeqMax = ProcessInfo.processInfo.environment["MBT_N_SEQ_MAX"]
+                    .flatMap(Int.init).map { max(1, $0) } ?? 8
+                cparams.n_ctx = perSeq
                 cparams.n_batch = 512
+                cparams.n_seq_max = UInt32(self.nSeqMax)
+                // Unified KV keeps n_ctx_seq = n_ctx (panel pastes still get 4096)
+                // instead of dividing the cache across sequences.
+                cparams.kv_unified = self.nSeqMax > 1
+                cparams.n_outputs_max = UInt32(self.nSeqMax)
 
                 guard let c = llama_init_from_model(m, cparams) else {
                     llama_model_free(m)
@@ -88,7 +98,8 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
 
                 self.model = m
                 self.ctx = c
-                self.nCtx = Int(cparams.n_ctx)
+                self.nCtx = Int(llama_n_ctx(c))
+                self.nCtxSeq = Int(llama_n_ctx_seq(c))
                 self.nBatch = Int(cparams.n_batch)
                 cont.resume()
             }
@@ -112,6 +123,22 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
         }
     }
 
+    public func translateMany(_ items: [(String, LanguagePair)]) async throws -> [String] {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<[String], Error>) in
+            queue.async { [self] in
+                guard let model = self.model, let ctx = self.ctx else {
+                    cont.resume(throwing: TranslationEngineError.notLoaded)
+                    return
+                }
+                do {
+                    cont.resume(returning: try self.runMany(model: model, ctx: ctx, items: items))
+                } catch {
+                    cont.resume(throwing: error)
+                }
+            }
+        }
+    }
+
     public func evict() async {
         await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
             queue.async { [self] in
@@ -125,6 +152,217 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
     }
 
     // MARK: - Inference
+
+    private func runMany(
+        model: OpaquePointer,
+        ctx: OpaquePointer,
+        items: [(String, LanguagePair)]
+    ) throws -> [String] {
+        if items.isEmpty { return [] }
+        if items.count == 1 {
+            return [try runInference(model: model, ctx: ctx, text: items[0].0, pair: items[0].1)]
+        }
+        var out: [String] = []
+        out.reserveCapacity(items.count)
+        var i = 0
+        while i < items.count {
+            let end = min(i + nSeqMax, items.count)
+            let chunk = Array(items[i..<end])
+            if chunk.count == 1 {
+                out.append(try runInference(model: model, ctx: ctx, text: chunk[0].0, pair: chunk[0].1))
+            } else {
+                do {
+                    out.append(contentsOf: try runParallel(model: model, ctx: ctx, items: chunk))
+                } catch {
+                    FileHandle.standardError.write(
+                        Data("llama batch fallback serial: \(error)\n".utf8)
+                    )
+                    for item in chunk {
+                        out.append(try runInference(model: model, ctx: ctx, text: item.0, pair: item.1))
+                    }
+                }
+            }
+            i = end
+        }
+        return out
+    }
+
+    private func runParallel(
+        model: OpaquePointer,
+        ctx: OpaquePointer,
+        items: [(String, LanguagePair)]
+    ) throws -> [String] {
+        lastPromptTokens = []
+        let vocab = llama_model_get_vocab(model)
+        let mem = llama_get_memory(ctx)
+        llama_memory_clear(mem, true)
+
+        var tokenized: [[llama_token]] = []
+        var families: [ModelFamily] = []
+        tokenized.reserveCapacity(items.count)
+        for item in items {
+            let family = detectFamily(model)
+            if family == .hunyuan, SamplingProfile.current == .modelCard {
+                throw TranslationEngineError.unavailable("hunyuan sampling is per-sequence")
+            }
+            let prompt = renderPrompt(family, vocab: vocab, text: item.0, pair: item.1)
+            let tokens = try tokenize(vocab, prompt)
+            guard tokens.count < nCtxSeq else {
+                throw TranslationEngineError.unavailable(
+                    "input too long for context (\(tokens.count) tokens, n_ctx_seq=\(nCtxSeq))")
+            }
+            tokenized.append(tokens)
+            families.append(family)
+        }
+
+        for seq in 0..<items.count {
+            let tokens = tokenized[seq]
+            if tokens.count > 1 {
+                try decodeTokens(
+                    ctx, tokens: Array(tokens.dropLast()), seq: Int32(seq), pos0: 0, logitsLast: false)
+            }
+        }
+        try decodeLastTokens(ctx, tokenized: tokenized)
+
+        let sparams = llama_sampler_chain_default_params()
+        guard let chain = llama_sampler_chain_init(sparams) else {
+            throw TranslationEngineError.unavailable("llama_sampler_chain_init failed")
+        }
+        defer { llama_sampler_free(chain) }
+        llama_sampler_chain_add(chain, llama_sampler_init_greedy())
+
+        var alive = Array(0..<items.count)
+        var pos = tokenized.map { Int32($0.count) }
+        var outputTokens = Array(repeating: [llama_token](), count: items.count)
+        let maxGen = tokenized.map { nCtxSeq - $0.count }
+        var genBatch = llama_batch_init(Int32(items.count), 0, 1)
+        defer { llama_batch_free(genBatch) }
+
+        while !alive.isEmpty {
+            var next: [Int] = []
+            for (bi, seq) in alive.enumerated() {
+                let sampled = llama_sampler_sample(chain, ctx, Int32(bi))
+                llama_sampler_accept(chain, sampled)
+                if llama_vocab_is_eog(vocab, sampled) { continue }
+                outputTokens[seq].append(sampled)
+                if outputTokens[seq].count >= maxGen[seq] { continue }
+                let i = next.count
+                genBatch.token[i] = sampled
+                genBatch.pos[i] = pos[seq]
+                genBatch.n_seq_id[i] = 1
+                genBatch.seq_id[i]![0] = Int32(seq)
+                genBatch.logits[i] = 1
+                pos[seq] += 1
+                next.append(seq)
+            }
+            if next.isEmpty { break }
+            genBatch.n_tokens = Int32(next.count)
+            let rc = llama_decode(ctx, genBatch)
+            if rc != 0 {
+                throw TranslationEngineError.unavailable("llama_decode (batch gen) failed \(rc)")
+            }
+            alive = next
+        }
+
+        return zip(outputTokens, families).map { stripArtifacts(detokenize(vocab, $0), family: $1) }
+    }
+
+    private func detectFamily(_ model: OpaquePointer) -> ModelFamily {
+        let arch = llamaMeta(model, key: "general.architecture") ?? ""
+        let name = llamaMeta(model, key: "general.basename")
+            ?? llamaMeta(model, key: "general.name") ?? ""
+        if name.lowercased().contains("milmmt") { return .milmmt }
+        if arch.contains("hunyuan") { return .hunyuan }
+        if arch.hasPrefix("gemma4") { return .gemma4 }
+        return .gemma
+    }
+
+    private func renderPrompt(
+        _ family: ModelFamily, vocab: OpaquePointer?, text: String, pair: LanguagePair
+    ) -> String {
+        switch family {
+        case .hunyuan:
+            let bos = llama_vocab_bos(vocab)
+            let bosText = bos < 0 ? nil : llama_vocab_get_text(vocab, bos).map { String(cString: $0) }
+            return PromptBuilder.hunyuan(
+                text: text, pair: pair, dialect: HunyuanDialect(bosToken: bosText))
+        case .gemma4:
+            return PromptBuilder.gemma4(text: text, pair: pair)
+        case .milmmt:
+            return PromptBuilder.milmmt(text: text, pair: pair)
+        case .gemma:
+            return PromptBuilder.gemma(text: text, pair: pair)
+        }
+    }
+
+    private func tokenize(_ vocab: OpaquePointer?, _ prompt: String) throws -> [llama_token] {
+        var tokens = [llama_token](repeating: 0, count: prompt.utf8.count + 32)
+        let nTokens = llama_tokenize(
+            vocab, prompt, Int32(prompt.utf8.count),
+            &tokens, Int32(tokens.count), true, true)
+        guard nTokens > 0 else {
+            throw TranslationEngineError.unavailable("llama_tokenize returned \(nTokens)")
+        }
+        return Array(tokens.prefix(Int(nTokens)))
+    }
+
+    private func decodeTokens(
+        _ ctx: OpaquePointer, tokens: [llama_token], seq: Int32, pos0: Int, logitsLast: Bool
+    ) throws {
+        for range in LlamaPrefill.chunkRanges(count: tokens.count, batchSize: nBatch) {
+            let chunk = tokens[range]
+            var batch = llama_batch_init(Int32(chunk.count), 0, 1)
+            defer { llama_batch_free(batch) }
+            let lastChunk = range.upperBound == tokens.count
+            for (i, tok) in chunk.enumerated() {
+                batch.token[i] = tok
+                batch.pos[i] = Int32(pos0 + range.lowerBound + i)
+                batch.n_seq_id[i] = 1
+                batch.seq_id[i]![0] = seq
+                batch.logits[i] = 0
+            }
+            if logitsLast, lastChunk {
+                batch.logits[chunk.count - 1] = 1
+            }
+            batch.n_tokens = Int32(chunk.count)
+            let rc = llama_decode(ctx, batch)
+            if rc != 0 {
+                throw TranslationEngineError.unavailable("llama_decode (prefill) failed \(rc)")
+            }
+        }
+    }
+
+    private func decodeLastTokens(_ ctx: OpaquePointer, tokenized: [[llama_token]]) throws {
+        let n = tokenized.count
+        var batch = llama_batch_init(Int32(n), 0, 1)
+        defer { llama_batch_free(batch) }
+        for seq in 0..<n {
+            let tokens = tokenized[seq]
+            let last = tokens[tokens.count - 1]
+            batch.token[seq] = last
+            batch.pos[seq] = Int32(tokens.count - 1)
+            batch.n_seq_id[seq] = 1
+            batch.seq_id[seq]![0] = Int32(seq)
+            batch.logits[seq] = 1
+        }
+        batch.n_tokens = Int32(n)
+        let rc = llama_decode(ctx, batch)
+        if rc != 0 {
+            throw TranslationEngineError.unavailable("llama_decode (batch logits) failed \(rc)")
+        }
+    }
+
+    private func detokenize(_ vocab: OpaquePointer?, _ outputTokens: [llama_token]) -> String {
+        var output = ""
+        var buf = [CChar](repeating: 0, count: 256)
+        for tok in outputTokens {
+            let n = llama_token_to_piece(vocab, tok, &buf, Int32(buf.count), 0, false)
+            if n > 0 {
+                output += String(bytes: buf.prefix(Int(n)).map { UInt8(bitPattern: $0) }, encoding: .utf8) ?? ""
+            }
+        }
+        return output
+    }
 
     private func runInference(
         model: OpaquePointer,
@@ -180,9 +418,9 @@ public final class LlamaEngine: TranslationEngine, @unchecked Sendable {
             throw TranslationEngineError.unavailable("llama_tokenize returned \(nTokens)")
         }
         tokens = Array(tokens.prefix(Int(nTokens)))
-        guard tokens.count < nCtx else {
+        guard tokens.count < nCtxSeq else {
             throw TranslationEngineError.unavailable(
-                "input too long for context (\(tokens.count) tokens, n_ctx=\(nCtx))")
+                "input too long for context (\(tokens.count) tokens, n_ctx_seq=\(nCtxSeq))")
         }
 
         let mem = llama_get_memory(ctx)

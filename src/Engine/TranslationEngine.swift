@@ -46,8 +46,23 @@ public protocol TranslationEngine: AnyObject, Sendable {
     /// Translate `text` for the given language pair. Must be called only while loaded.
     func translate(_ text: String, _ pair: LanguagePair) async throws -> String
 
+    /// Translate several independent snippets. Default loops `translate`; llama.cpp
+    /// overrides this with a multi-sequence decode.
+    func translateMany(_ items: [(String, LanguagePair)]) async throws -> [String]
+
     /// Release the weights (but not the runtime). Idempotent.
     func evict() async
+}
+
+extension TranslationEngine {
+    public func translateMany(_ items: [(String, LanguagePair)]) async throws -> [String] {
+        var out: [String] = []
+        out.reserveCapacity(items.count)
+        for item in items {
+            out.append(try await translate(item.0, item.1))
+        }
+        return out
+    }
 }
 
 /// Errors an engine may raise on the translation path.

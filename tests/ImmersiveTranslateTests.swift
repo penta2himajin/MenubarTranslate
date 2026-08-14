@@ -35,6 +35,38 @@ struct ImmersiveTranslateTests {
         #expect(ImmersiveTranslate.language(from: "auto") == nil)
     }
 
+    @Test("POST sends the whole text_list in one translateMany")
+    func postBatchesTextList() async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "source_lang": "ja",
+            "target_lang": "en",
+            "text_list": ["こんにちは", "世界"],
+        ])
+        var batches: [[String]] = []
+        let result = await ImmersiveTranslate.handlePOST(body: body) { items in
+            batches.append(items.map(\.0))
+            return items.map { "[\($0.1.token)] \($0.0)" }
+        }
+        #expect(result.status == 200)
+        #expect(batches == [["こんにちは", "世界"]])
+    }
+
+    @Test("OpenAI chat %% parts go in one translateMany")
+    func postOpenAIChatBatchesParts() async throws {
+        let body = Data(
+            """
+            {"model":"","messages":[{"role":"system","content":"流暢な日本語に翻訳"},{"role":"user","content":"日本語に翻訳してください：\\n\\nDownloads\\n\\n%%\\n\\nSupport"}]}
+            """.utf8
+        )
+        var batches: [[String]] = []
+        let result = await ImmersiveTranslate.handlePOST(body: body) { items in
+            batches.append(items.map(\.0))
+            return items.map { "[\($0.1.token)] \($0.0)" }
+        }
+        #expect(result.status == 200)
+        #expect(batches == [["Downloads", "Support"]])
+    }
+
     @Test("POST translates a supported pair via the injected engine")
     func postSupportedPair() async throws {
         let body = try JSONSerialization.data(withJSONObject: [
