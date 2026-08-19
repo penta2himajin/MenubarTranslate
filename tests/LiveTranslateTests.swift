@@ -51,4 +51,50 @@ struct LiveTranslateTests {
         #expect(vm.output == "[ja-en] こんにちは")
         #expect(vm.targetLanguage == .en)
     }
+
+    @Test("live prefixes of the same draft coalesce into one history row")
+    func livePrefixesCoalesce() async {
+        let vm = makeVM()
+        vm.targetLanguage = .en
+        await vm.translateLive(draft: "こ")
+        await vm.translateLive(draft: "こん")
+        await vm.translateLive(draft: "こんにちは")
+        #expect(vm.history.count == 1)
+        #expect(vm.history[0].source == "こんにちは")
+        #expect(vm.history[0].output == "[ja-en] こんにちは")
+    }
+
+    @Test("live backspace still updates the same history row")
+    func liveBackspaceCoalesces() async {
+        let vm = makeVM()
+        vm.targetLanguage = .en
+        await vm.translateLive(draft: "こんにちは")
+        let id = vm.history[0].id
+        await vm.translateLive(draft: "こんに")
+        #expect(vm.history.count == 1)
+        #expect(vm.history[0].id == id)
+        #expect(vm.history[0].source == "こんに")
+    }
+
+    @Test("IME conversion within a burst replaces the romaji row")
+    func liveIMEConversionCoalesces() async {
+        let vm = makeVM()
+        vm.targetLanguage = .en
+        await vm.translateLive(draft: "konnichiha")
+        await vm.translateLive(draft: "こんにちは")
+        #expect(vm.history.count == 1)
+        #expect(vm.history[0].source == "こんにちは")
+    }
+
+    @Test("clearing the field starts a new history row")
+    func liveClearStartsNewRow() async {
+        let vm = makeVM()
+        vm.targetLanguage = .en
+        await vm.translateLive(draft: "こんにちは")
+        await vm.translateLive(draft: "  ")
+        await vm.translateLive(draft: "今日は雨")
+        #expect(vm.history.count == 2)
+        #expect(vm.history[0].source == "今日は雨")
+        #expect(vm.history[1].source == "こんにちは")
+    }
 }
