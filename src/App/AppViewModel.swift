@@ -59,6 +59,9 @@ public final class AppViewModel {
     private let runtime: AppRuntime
     private var liveTask: Task<Void, Never>?
     private var applyingHistory = false
+    /// Live typing keeps updating one row until the field is cleared.
+    private var historyBurstBroken = false
+    private var lastHistoryAt: Date?
 
     public init(runtime: AppRuntime) {
         self.runtime = runtime
@@ -109,8 +112,12 @@ public final class AppViewModel {
     /// Live path: detect source from `draft`, translate into `targetLanguage`.
     public func translateLive(draft: String) async {
         setInput(draft)
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            historyBurstBroken = true
+            return
+        }
         guard !isBusy else { return }
-        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         guard let source = AppLanguage.detect(draft) else { return }
         if source == targetLanguage {
             output = draft
@@ -128,6 +135,12 @@ public final class AppViewModel {
             return
         }
         setInput(draft)
+        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            liveTask?.cancel()
+            historyBurstBroken = true
+            return
+        }
         liveTask?.cancel()
         liveTask = Task { @MainActor [weak self] in
             try? await Task.sleep(for: .milliseconds(450))
@@ -139,6 +152,7 @@ public final class AppViewModel {
     public func applyHistory(_ item: TranslationHistoryItem) {
         liveTask?.cancel()
         applyingHistory = true
+        historyBurstBroken = true
         targetLanguage = item.target
         input = item.source
         output = item.output
@@ -165,13 +179,30 @@ public final class AppViewModel {
     }
 
     private func recordHistory(source: String, output: String) {
-        let item = TranslationHistoryItem(source: source, output: output, target: targetLanguage)
-        if history.first?.source == source, history.first?.target == targetLanguage {
-            history[0] = item
-            return
+        let now = Date()
+        if let first = history.first, first.target == targetLanguage, !historyBurstBroken {
+            let sameDraft = Self.isSameDraft(previous: first.source, next: source)
+            let sameBurst = lastHistoryAt.map { now.timeIntervalSince($0) < 3 } ?? false
+            if sameDraft || sameBurst {
+                history[0] = TranslationHistoryItem(
+                    id: first.id, source: source, output: output, target: targetLanguage)
+                lastHistoryAt = now
+                return
+            }
         }
+        historyBurstBroken = false
+        let item = TranslationHistoryItem(source: source, output: output, target: targetLanguage)
         history.insert(item, at: 0)
         if history.count > 20 { history.removeLast() }
+        lastHistoryAt = now
+    }
+
+    /// Growing, shrinking, or whitespace-only edits of the same live field.
+    private static func isSameDraft(previous: String, next: String) -> Bool {
+        let a = previous.trimmingCharacters(in: .whitespacesAndNewlines)
+        let b = next.trimmingCharacters(in: .whitespacesAndNewlines)
+        if a.isEmpty || b.isEmpty { return false }
+        return b.hasPrefix(a) || a.hasPrefix(b)
     }
 
     public func tick() async {
