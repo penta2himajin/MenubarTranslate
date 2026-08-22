@@ -13,7 +13,7 @@ Settled engineering judgements for MenubarTranslate. English-only per
 | 0006 | Critical-pressure degradation and OS fallback | Accepted |
 | 0007 | Toolchain: Swift + SwiftUI, native, via SwiftPM | Accepted |
 | 0008 | Runtime selection: TranslateGemma-4B on MLX 4-bit (measured) | Superseded by 0009 |
-| 0009 | Model selection: Gemma 4 E2B, GGUF only, no local fallback | Accepted (amended: MLX claim corrected) |
+| 0009 | Model selection: Gemma 4 E2B, GGUF only, no local fallback | Accepted (amended: MLX claim; Hy-MT2 Apache 2.0) |
 | 0010 | Distribution: unsigned release via Homebrew, model fetched by script | Accepted |
 | 0011 | Loopback HTTP for Immersive Translate | Accepted |
 

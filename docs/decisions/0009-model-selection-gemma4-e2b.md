@@ -120,12 +120,15 @@ capability-gated Apple Translation framework. No second set of weights ships.
   1.7× the latency, register drift, and higher committed memory.
 - **Hy-MT2-1.8B.** Re-measured under both decoders after the prompt fix; the
   duplicated clauses, misspellings and mistranslated proper nouns survive both.
-  ADR 0008's rejection stands, on stronger evidence.
+  ADR 0008's rejection stands, on stronger evidence. (License is not the reason:
+  Hy-MT2 is Apache 2.0 as of 2026-05-26 — see amendment below.)
 - **HY-MT1.5-1.8B.** The only other 1–2 B translation model with an official
-  GGUF and Japanese support. Rejected unmeasured: the Tencent Hunyuan Community
-  License excludes the EU, UK and South Korea from its Territory and forbids use
-  or display of Outputs outside it — incompatible with undifferentiated
-  distribution.
+  GGUF and Japanese support at the time of this ADR. Rejected unmeasured: when
+  recorded, the Tencent Hunyuan Community License excluded the EU, UK and South
+  Korea from its Territory and forbade use or display of Outputs outside it —
+  incompatible with undifferentiated distribution. Hy-MT2 (the successor line)
+  later switched to Apache 2.0; see amendment. This ADR did not re-measure
+  HY-MT1.5 after that change.
 - **NLLB-200-distilled-1.3B.** CC-BY-NC-4.0; non-commercial, and an
   encoder-decoder llama.cpp does not support.
 
@@ -189,3 +192,22 @@ filled the KV cache mid-decode (`decode: failed to find a memory slot for
 batch of size 1`) and returned a truncated translation. The default is 4096;
 generation now runs until EOS or the remaining context, not a fixed 512.
 `MBT_N_CTX=1024` still reproduces the bench configuration.
+
+## Amendment (2026-08-22) — Hy-MT2 is Apache 2.0
+
+Hy-MT2 was originally published under the Tencent HY Community License
+(territory limits including EU exclusion). On 2026-05-26 the upstream repo
+renewed the licence to Apache License 2.0
+([Tencent-Hunyuan/Hy-MT2@c30b36c](https://github.com/Tencent-Hunyuan/Hy-MT2/commit/c30b36c59b19252dae7f3afca34d8478dbe67de9)).
+
+Verified 2026-08-22 against current upstream text:
+
+- GitHub `LICENSE.txt`: *"Hy-MT2 is licensed under the Apache License, Version 2.0."*
+- Hugging Face model cards tag `license: apache-2.0` (e.g. `tencent/Hy-MT2-1.8B`)
+- Matching `LICENSE.txt` on `tencent/Hy-MT2-1.8B`, `tencent/Hy-MT2-7B`, and the
+  GGUF repos (`…-1.8B-GGUF`, `…-7B-GGUF`)
+
+This does **not** reverse the Hy-MT2-1.8B rejection in this ADR, which rests on
+measured quality. It does remove the Community-License / territory argument as
+a reason not to consider Hy-MT2 weights for experiments or a future revisit.
+Gemma 4 E2B remains the shipping default.
