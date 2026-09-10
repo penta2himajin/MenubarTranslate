@@ -211,6 +211,7 @@ public final class AppRuntime {
     /// `TranslationEngineError.unavailable`.
     public func translate(_ text: String, _ pair: LanguagePair) async throws -> String {
         guard LanguagePair.isSupported(pair) else {
+            AppLog.error(.translate, "unsupported_pair", ["pair": pair.token])
             throw TranslationEngineError.unavailable("unsupported language pair: \(pair.token)")
         }
 
@@ -220,11 +221,20 @@ public final class AppRuntime {
            let check = fallbackAvailable, check(),
            let fb = fallback,
            pair.token == "ja-en" || pair.token == "en-ja" {
+            AppLog.info(.translate, "fallback_os", ["pair": pair.token])
             try await fb.load() // idempotent; engines guard against double-load
             return try await fb.translate(text, pair)
         }
 
-        return try await service.translate(text, pair: pair).text
+        do {
+            return try await service.translate(text, pair: pair).text
+        } catch {
+            AppLog.error(.translate, "engine_fail", [
+                "pair": pair.token,
+                "error": String(describing: error),
+            ])
+            throw error
+        }
     }
 
     public func translateMany(_ items: [(String, LanguagePair)]) async throws -> [String] {
