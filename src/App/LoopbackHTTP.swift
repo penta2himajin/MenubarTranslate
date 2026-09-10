@@ -199,5 +199,5 @@ struct HTTPRequest: Equatable {
 }
 
 private func httpLog(_ message: String) {
-    FileHandle.standardError.write(Data("immersive http \(message)\n".utf8))
+    AppLog.info(.http, "immersive", ["detail": message])
 }

@@ -112,7 +112,7 @@ final class AppState {
 
         // Resolve the model path from environment; mirrors mbt/main.swift.
         let llamaPath = ModelPath.llamaGGUF()
-        FileHandle.standardError.write(Data("gguf=\(llamaPath)\n".utf8))
+        AppLog.info(.model, "resolved", ["path": llamaPath])
 
         // One model, one runtime (ADR 0009). MLX is a development path, not a
         // shipping one — mmap-backed reload, not "cannot load on MLX" (see the
@@ -120,6 +120,11 @@ final class AppState {
         let engine: any TranslationEngine = LlamaEngine(modelPath: llamaPath)
 
         let preset = MemoryPreset.forPhysicalMemory(ProcessInfo.processInfo.physicalMemory)
+        AppLog.info(.app, "boot", [
+            "preset": preset == .conservative8GB ? "conservative8GB" : "permissive16GB",
+            "log_level": AppLog.minimumLevel.label,
+            "log_dir": CrashLog.logsDirectory().path,
+        ])
 
         // OS fallback (ADR 0006): translator reads the live session box; throws
         // unavailable when the session is absent or the pair token doesn't match
@@ -146,12 +151,14 @@ final class AppState {
 
     func setHTTPLoopbackEnabled(_ on: Bool) {
         LoopbackPreference.setEnabled(on)
+        AppLog.info(.http, on ? "loopback_on" : "loopback_off", [
+            "port": "\(ImmersiveTranslate.port())",
+        ])
         if on {
             startHTTPLoopback()
         } else {
             httpServer?.stop()
             httpServer = nil
-            print("immersive http off")
         }
     }
 
@@ -163,7 +170,7 @@ final class AppState {
                 try await runtime.translateMany(items)
             }
         } catch {
-            print("immersive http: \(error)")
+            AppLog.error(.http, "loopback_start_failed", ["error": String(describing: error)])
         }
     }
 }

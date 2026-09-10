@@ -66,11 +66,11 @@ public final class AppViewModel {
     public init(runtime: AppRuntime) {
         self.runtime = runtime
         self.snapshot = runtime.snapshot
-        print("status \(statusLine)")
+        AppLog.info(.residency, "snapshot", ["status": statusLine])
         runtime.onChange = { [weak self] snap in
             guard let self, self.snapshot != snap else { return }
             self.snapshot = snap
-            print("status \(self.statusLine)")
+            AppLog.info(.residency, "snapshot", ["status": self.statusLine])
         }
         let picker = AppLanguage.pickerLanguages()
         if let first = picker.first(where: { $0 != .ja }) ?? picker.first {
@@ -115,13 +115,21 @@ public final class AppViewModel {
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             historyBurstBroken = true
+            AppLog.debug(.history, "burst_broken", ["reason": "empty_live"])
             return
         }
-        guard !isBusy else { return }
-        guard let source = AppLanguage.detect(draft) else { return }
+        guard !isBusy else {
+            AppLog.debug(.translate, "live_skipped", ["reason": "busy"])
+            return
+        }
+        guard let source = AppLanguage.detect(draft) else {
+            AppLog.debug(.translate, "live_skipped", ["reason": "undetected_lang", "chars": "\(trimmed.count)"])
+            return
+        }
         if source == targetLanguage {
             output = draft
             errorMessage = nil
+            AppLog.debug(.translate, "live_passthrough", ["lang": source.code])
             recordHistory(source: draft, output: draft)
             return
         }
@@ -132,6 +140,7 @@ public final class AppViewModel {
         if applyingHistory {
             applyingHistory = false
             setInput(draft)
+            AppLog.debug(.history, "schedule_skip", ["reason": "applying_history"])
             return
         }
         setInput(draft)
@@ -139,6 +148,7 @@ public final class AppViewModel {
         if trimmed.isEmpty {
             liveTask?.cancel()
             historyBurstBroken = true
+            AppLog.debug(.history, "burst_broken", ["reason": "empty_schedule"])
             return
         }
         liveTask?.cancel()
@@ -157,6 +167,11 @@ public final class AppViewModel {
         input = item.source
         output = item.output
         errorMessage = nil
+        AppLog.info(.history, "apply", [
+            "id": item.id.uuidString,
+            "target": item.target.code,
+            "chars": "\(item.source.count)",
+        ])
     }
 
     public func translate() async {
@@ -168,12 +183,24 @@ public final class AppViewModel {
         guard !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         isBusy = true
         errorMessage = nil
+        AppLog.info(.translate, "start", [
+            "pair": pair.token,
+            "chars": "\(input.count)",
+        ])
         do {
             let result = try await runtime.translate(input, pair)
             output = result
+            AppLog.info(.translate, "ok", [
+                "pair": pair.token,
+                "out_chars": "\(result.count)",
+            ])
             recordHistory(source: input, output: result)
         } catch {
             errorMessage = String(describing: error)
+            AppLog.error(.translate, "fail", [
+                "pair": pair.token,
+                "error": String(describing: error),
+            ])
         }
         isBusy = false
     }
@@ -187,6 +214,13 @@ public final class AppViewModel {
                 history[0] = TranslationHistoryItem(
                     id: first.id, source: source, output: output, target: targetLanguage)
                 lastHistoryAt = now
+                AppLog.debug(.history, "coalesce", [
+                    "action": "update",
+                    "same_draft": "\(sameDraft)",
+                    "same_burst": "\(sameBurst)",
+                    "id": first.id.uuidString,
+                    "chars": "\(source.count)",
+                ])
                 return
             }
         }
@@ -195,6 +229,12 @@ public final class AppViewModel {
         history.insert(item, at: 0)
         if history.count > 20 { history.removeLast() }
         lastHistoryAt = now
+        AppLog.debug(.history, "insert", [
+            "id": item.id.uuidString,
+            "count": "\(history.count)",
+            "chars": "\(source.count)",
+            "target": targetLanguage.code,
+        ])
     }
 
     /// Growing, shrinking, or whitespace-only edits of the same live field.

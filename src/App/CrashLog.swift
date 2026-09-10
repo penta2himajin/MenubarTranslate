@@ -133,6 +133,10 @@ public enum CrashLog {
         let stamp =
             "--- \(ISO8601DateFormatter().string(from: Date())) pid=\(getpid()) exe=\(exe) ---\n"
         FileHandle.standardError.write(Data(stamp.utf8))
+        AppLog.info(.app, "console_redirect", [
+            "path": url.path,
+            "level": AppLog.minimumLevel.label,
+        ])
     }
 
     private static func recordException(_ exception: NSException) {
