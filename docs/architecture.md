@@ -7,7 +7,8 @@ This document is the narrative; the binding decisions live in `docs/decisions/`.
 
 A local-only macOS menu bar app translating JA↔EN on Apple Silicon. No translation
 traffic leaves the device. A loopback HTTP server (ADR 0011) lets Immersive Translate
-call the same `AppRuntime` path; it is not an outbound client. Primary target: **8 GB unified memory**; 16 GB+ supported
+and OpenAI-compatible clients (e.g. KISS Translator) call the same `AppRuntime` path;
+it is not an outbound client. Primary target: **8 GB unified memory**; 16 GB+ supported
 with more permissive residency.
 
 ## Inference core

@@ -19,9 +19,15 @@ swift run MenubarTranslateApp                  # menu-bar app
 ```
 
 The menu-bar app can listen on **loopback** `http://127.0.0.1:18787/` (override
-`MBT_HTTP_PORT`) for [Immersive Translate](https://immersivetranslate.com/en/docs/services/custom/)
-Custom API. Turn on **HTTP Loopback** in the gear menu. Enable Beta features in
-the extension, pick Custom API, set that URL. Pairs are ja / en / zh only.
+`MBT_HTTP_PORT`). Turn on **HTTP Loopback** in the gear menu.
+
+- [Immersive Translate](https://immersivetranslate.com/en/docs/services/custom/)
+  Custom API: point at `http://127.0.0.1:18787/` (Beta → Custom API).
+- [KISS Translator](https://github.com/fishjar/kiss-translator) / other OpenAI
+  clients: use the **OpenAI** or **Ollama** provider with
+  `http://127.0.0.1:18787/v1/chat/completions` (and model list
+  `http://127.0.0.1:18787/v1/models`). API key can be any non-empty string.
+  Pairs are ja / en / zh only. See ADR 0011.
 
 The real engines need local weights (`MBT_LLAMA_GGUF` / `MBT_MLX_DIR`) and, for
 `--engine llama`, one run of `./scripts/build-llama-xcframework.sh`. Without

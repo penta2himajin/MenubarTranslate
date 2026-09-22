@@ -1,6 +1,7 @@
 import Foundation
 
-/// Immersive Translate Custom API (https://immersivetranslate.com/en/docs/services/custom/).
+/// Immersive Translate Custom API + thin OpenAI chat facade for loopback clients
+/// (KISS Translator, etc.). See ADR 0011.
 /// Language pairs are gated by `LanguagePair.isSupported` (ja / en / zh).
 public enum ImmersiveTranslate {
     public static let defaultPort: UInt16 = 18787
@@ -20,10 +21,53 @@ public enum ImmersiveTranslate {
     public struct HTTPResult: Equatable, Sendable {
         public var status: Int
         public var body: Data
-        public init(status: Int, body: Data) {
+        public var contentType: String
+        public init(status: Int, body: Data, contentType: String = "application/json") {
             self.status = status
             self.body = body
+            self.contentType = contentType
         }
+    }
+
+    /// Route a loopback request. OpenAI clients use `/v1/chat/completions` and
+    /// `/v1/models`; Immersive Custom API posts JSON to `/`.
+    public static func handleHTTP(
+        method: String,
+        path: String,
+        body: Data,
+        translate: @escaping (String, LanguagePair) async throws -> String
+    ) async -> HTTPResult {
+        await handleHTTP(method: method, path: path, body: body) { items in
+            var out: [String] = []
+            out.reserveCapacity(items.count)
+            for item in items {
+                out.append(try await translate(item.0, item.1))
+            }
+            return out
+        }
+    }
+
+    public static func handleHTTP(
+        method: String,
+        path: String,
+        body: Data,
+        translateMany: ([(String, LanguagePair)]) async throws -> [String]
+    ) async -> HTTPResult {
+        let method = method.uppercased()
+        let path = normalizePath(path)
+        if method == "OPTIONS" {
+            return HTTPResult(status: 204, body: Data())
+        }
+        if method == "GET", path == "/v1/models" || path == "/models" {
+            return modelsResult()
+        }
+        guard method == "POST" else {
+            return errorResult(405, "method not allowed")
+        }
+        if path.hasSuffix("/chat/completions") || path == "/v1/chat/completions" {
+            return await handleChatPOST(body: body, translateMany: translateMany)
+        }
+        return await handlePOST(body: body, translateMany: translateMany)
     }
 
     public static func handlePOST(
@@ -59,6 +103,39 @@ public enum ImmersiveTranslate {
             return await handleChat(obj, translateMany: translateMany)
         }
         return await handleCustom(obj, translateMany: translateMany)
+    }
+
+    private static func handleChatPOST(
+        body: Data,
+        translateMany: ([(String, LanguagePair)]) async throws -> [String]
+    ) async -> HTTPResult {
+        let payload = HTTPPayload.unwrap(body)
+        guard let obj = jsonObject(from: payload) else {
+            return errorResult(400, "invalid json")
+        }
+        return await handleChat(obj, translateMany: translateMany)
+    }
+
+    private static func normalizePath(_ path: String) -> String {
+        let trimmed = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
+        if trimmed.isEmpty { return "/" }
+        return trimmed.hasPrefix("/") ? trimmed : "/" + trimmed
+    }
+
+    private static func modelsResult() -> HTTPResult {
+        let payload: [String: Any] = [
+            "object": "list",
+            "data": [
+                [
+                    "id": "menubartranslate",
+                    "object": "model",
+                    "created": 0,
+                    "owned_by": "local",
+                ],
+            ],
+        ]
+        let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+        return HTTPResult(status: 200, body: data)
     }
 
     private static func handleCustom(
@@ -156,53 +233,247 @@ public enum ImmersiveTranslate {
         let messages = obj["messages"] as? [[String: Any]] ?? []
         let system = messages.first { ($0["role"] as? String) == "system" }?["content"] as? String ?? ""
         let user = messages.last { ($0["role"] as? String) == "user" }?["content"] as? String ?? ""
-        guard let target = inferTarget(system + "\n" + user) else {
+        let combined = system + "\n" + user
+        let stream = (obj["stream"] as? Bool) ?? false
+        let model = (obj["model"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? "menubartranslate"
+
+        let extracted = extractChatTexts(from: user, prompt: combined)
+        guard let target = extracted.target ?? inferTarget(combined) else {
             return errorResult(400, "unsupported language pair: auto-?")
         }
-        var parts = user.components(separatedBy: "\n\n%%\n\n")
-        if parts.count == 1 {
-            parts = user.components(separatedBy: "\n%%\n")
+        guard !extracted.texts.isEmpty else {
+            return errorResult(400, "empty translation text")
         }
-        if let first = parts.first {
-            parts[0] = stripInstruction(first)
-        }
+
         let custom = await handleCustom(
             [
                 "source_lang": "auto",
                 "target_lang": target.code,
-                "text_list": parts,
+                "text_list": extracted.texts,
             ],
             translateMany: translateMany
         )
         guard custom.status == 200,
-              let obj = jsonObject(from: custom.body),
-              let rows = obj["translations"] as? [[String: Any]]
+              let responseObj = jsonObject(from: custom.body),
+              let rows = responseObj["translations"] as? [[String: Any]]
         else {
             return custom
         }
         let translated = rows.map { $0["text"] as? String ?? "" }
-        let content = translated.joined(separator: "\n\n%%\n\n")
+        let content: String
+        switch extracted.style {
+        case .kissJSON:
+            var items: [[String: Any]] = []
+            for (i, text) in translated.enumerated() {
+                let id = extracted.ids.indices.contains(i) ? extracted.ids[i] : i
+                items.append(["id": id, "text": text])
+            }
+            let data = (try? JSONSerialization.data(withJSONObject: items)) ?? Data("[]".utf8)
+            content = String(decoding: data, as: UTF8.self)
+        case .immersivePercent:
+            content = translated.joined(separator: "\n\n%%\n\n")
+        case .plain:
+            content = translated.joined(separator: "\n")
+        }
+
+        if stream {
+            return sseChatResult(model: model, content: content)
+        }
         let reply: [String: Any] = [
+            "id": "chatcmpl-mbt",
+            "object": "chat.completion",
+            "created": Int(Date().timeIntervalSince1970),
+            "model": model,
             "choices": [
-                ["message": ["role": "assistant", "content": content]],
+                [
+                    "index": 0,
+                    "message": ["role": "assistant", "content": content],
+                    "finish_reason": "stop",
+                ],
             ],
         ]
         let data = (try? JSONSerialization.data(withJSONObject: reply)) ?? Data()
         return HTTPResult(status: 200, body: data)
     }
 
+    private enum ChatStyle {
+        case plain
+        case immersivePercent
+        case kissJSON
+    }
+
+    private struct ExtractedChat {
+        var texts: [String]
+        var ids: [Int]
+        var style: ChatStyle
+        var target: AppLanguage?
+    }
+
+    /// Pull translation segments out of Immersive (`%%`) or KISS (concise / JSON array) prompts.
+    private static func extractChatTexts(from user: String, prompt: String) -> ExtractedChat {
+        if let fromObject = extractSegmentsObject(user) {
+            return ExtractedChat(
+                texts: fromObject.texts, ids: fromObject.ids, style: .kissJSON,
+                target: fromObject.target ?? inferTarget(prompt)
+            )
+        }
+        if let fromArray = extractJSONSegmentArray(user) {
+            return ExtractedChat(
+                texts: fromArray.texts, ids: fromArray.ids, style: .kissJSON,
+                target: inferTarget(prompt)
+            )
+        }
+        var parts = user.components(separatedBy: "\n\n%%\n\n")
+        if parts.count == 1 {
+            parts = user.components(separatedBy: "\n%%\n")
+        }
+        if parts.count > 1 {
+            if let first = parts.first {
+                parts[0] = stripInstruction(first)
+            }
+            let cleaned = parts.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+            return ExtractedChat(texts: cleaned, ids: [], style: .immersivePercent, target: inferTarget(prompt))
+        }
+        let plain = stripInstruction(user).trimmingCharacters(in: .whitespacesAndNewlines)
+        return ExtractedChat(
+            texts: plain.isEmpty ? [] : [plain],
+            ids: [],
+            style: .plain,
+            target: inferTarget(prompt)
+        )
+    }
+
+    private static func extractSegmentsObject(_ user: String)
+        -> (texts: [String], ids: [Int], target: AppLanguage?)?
+    {
+        guard let obj = jsonObject(from: Data(user.utf8)) ?? trailingJSONObject(in: user) else {
+            return nil
+        }
+        guard let segments = obj["segments"] as? [[String: Any]], !segments.isEmpty else {
+            return nil
+        }
+        var texts: [String] = []
+        var ids: [Int] = []
+        for (i, seg) in segments.enumerated() {
+            guard let text = seg["text"] as? String else { continue }
+            texts.append(text)
+            if let id = seg["id"] as? Int {
+                ids.append(id)
+            } else if let id = seg["id"] as? NSNumber {
+                ids.append(id.intValue)
+            } else {
+                ids.append(i)
+            }
+        }
+        guard !texts.isEmpty else { return nil }
+        let target: AppLanguage?
+        if let code = obj["targetLanguage"] as? String {
+            target = language(from: code) ?? inferTarget(code)
+        } else {
+            target = nil
+        }
+        return (texts, ids, target)
+    }
+
+    private static func extractJSONSegmentArray(_ user: String) -> (texts: [String], ids: [Int])? {
+        guard let arr = trailingJSONArray(in: user) as? [[String: Any]], !arr.isEmpty else {
+            return nil
+        }
+        guard arr.contains(where: { $0["text"] != nil }) else { return nil }
+        var texts: [String] = []
+        var ids: [Int] = []
+        for (i, seg) in arr.enumerated() {
+            guard let text = seg["text"] as? String else { continue }
+            texts.append(text)
+            if let id = seg["id"] as? Int {
+                ids.append(id)
+            } else if let id = seg["id"] as? NSNumber {
+                ids.append(id.intValue)
+            } else {
+                ids.append(i)
+            }
+        }
+        return texts.isEmpty ? nil : (texts, ids)
+    }
+
+    private static func trailingJSONObject(in text: String) -> [String: Any]? {
+        guard let start = text.lastIndex(of: "{") else { return nil }
+        return jsonObject(from: Data(String(text[start...]).utf8))
+    }
+
+    private static func trailingJSONArray(in text: String) -> Any? {
+        guard let start = text.lastIndex(of: "[") else { return nil }
+        let slice = String(text[start...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return try? JSONSerialization.jsonObject(with: Data(slice.utf8))
+    }
+
+    private static func sseChatResult(model: String, content: String) -> HTTPResult {
+        let created = Int(Date().timeIntervalSince1970)
+        func chunk(_ delta: [String: Any], finish: String?) -> String {
+            var choice: [String: Any] = ["index": 0, "delta": delta]
+            if let finish { choice["finish_reason"] = finish } else { choice["finish_reason"] = NSNull() }
+            let payload: [String: Any] = [
+                "id": "chatcmpl-mbt",
+                "object": "chat.completion.chunk",
+                "created": created,
+                "model": model,
+                "choices": [choice],
+            ]
+            let data = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data("{}".utf8)
+            return "data: \(String(decoding: data, as: UTF8.self))\n\n"
+        }
+        var body = chunk(["role": "assistant", "content": content], finish: nil)
+        body += chunk([:], finish: "stop")
+        body += "data: [DONE]\n\n"
+        return HTTPResult(status: 200, body: Data(body.utf8), contentType: "text/event-stream")
+    }
+
     static func inferTarget(_ prompt: String) -> AppLanguage? {
-        if prompt.contains("日本語") || prompt.localizedCaseInsensitiveContains("japanese") { return .ja }
-        if prompt.contains("中文") || prompt.localizedCaseInsensitiveContains("chinese") { return .zh }
-        if prompt.contains("英語") || prompt.localizedCaseInsensitiveContains("english") { return .en }
+        let lower = prompt.lowercased()
+        if prompt.contains("日本語") || lower.contains("japanese") || lower.contains("\"ja\"") {
+            return .ja
+        }
+        if prompt.contains("中文") || lower.contains("chinese") || lower.contains("zh-cn")
+            || lower.contains("zh-tw") || lower.contains("\"zh\"")
+        {
+            return .zh
+        }
+        if prompt.contains("英語") || prompt.contains("英文") || lower.contains("english")
+            || lower.contains("\"en\"")
+        {
+            return .en
+        }
+        // Prefer "into <lang>" / "to <lang>" phrases used by KISS concise prompts.
+        if let into = matchLanguage(after: "into ", in: lower)
+            ?? matchLanguage(after: "to ", in: lower)
+        {
+            return into
+        }
+        return nil
+    }
+
+    private static func matchLanguage(after marker: String, in lower: String) -> AppLanguage? {
+        guard let range = lower.range(of: marker) else { return nil }
+        let rest = lower[range.upperBound...]
+        if rest.hasPrefix("japanese") || rest.hasPrefix("ja") { return .ja }
+        if rest.hasPrefix("english") || rest.hasPrefix("en") { return .en }
+        if rest.hasPrefix("chinese") || rest.hasPrefix("zh") { return .zh }
         return nil
     }
 
     static func stripInstruction(_ text: String) -> String {
-        for marker in ["：\n\n", ":\n\n", "：\n", ":\n"] {
-            guard let range = text.range(of: marker) else { continue }
+        let markers = [
+            "without any explanation:\n",
+            "without any additional explanation:\n",
+            "without any explanation：\n",
+            "：\n\n", ":\n\n", "：\n", ":\n",
+        ]
+        for marker in markers {
+            guard let range = text.range(of: marker, options: .caseInsensitive) else { continue }
             let head = text[text.startIndex..<range.lowerBound]
-            if head.contains("翻訳") || head.localizedCaseInsensitiveContains("translate") {
+            if head.contains("翻訳") || head.localizedCaseInsensitiveContains("translate")
+                || head.localizedCaseInsensitiveContains("output only")
+            {
                 return String(text[range.upperBound...])
             }
         }
