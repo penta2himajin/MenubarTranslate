@@ -125,7 +125,117 @@ struct ImmersiveTranslateTests {
         #expect(HTTPRequest.parse(raw, complete: false) == nil)
         let parsed = HTTPRequest.parse(raw, complete: true)
         #expect(parsed?.method == "POST")
+        #expect(parsed?.path == "/")
         #expect(String(data: parsed?.body ?? Data(), encoding: .utf8) == "{\"target_lang\":\"en\",\"text_list\":[\"hi\"]}")
+    }
+
+    @Test("HTTP parser finishes GET as soon as headers arrive")
+    func httpParseGetWithoutBody() {
+        let raw = Data("GET /v1/models HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8)
+        let parsed = HTTPRequest.parse(raw, complete: false)
+        #expect(parsed?.method == "GET")
+        #expect(parsed?.path == "/v1/models")
+        #expect(parsed?.body.isEmpty == true)
+    }
+
+    @Test("HTTP parser keeps the request path for OpenAI routing")
+    func httpParseKeepsPath() {
+        let raw = Data("POST /v1/chat/completions HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}".utf8)
+        let parsed = HTTPRequest.parse(raw, complete: true)
+        #expect(parsed?.path == "/v1/chat/completions")
+    }
+
+    @Test("GET /v1/models lists the local translation model")
+    func getModels() async {
+        let result = await ImmersiveTranslate.handleHTTP(
+            method: "GET", path: "/v1/models", body: Data()
+        ) { _, _ in
+            Issue.record("models must not translate")
+            return ""
+        }
+        #expect(result.status == 200)
+        let json = try? JSONSerialization.jsonObject(with: result.body) as? [String: Any]
+        let data = json?["data"] as? [[String: Any]]
+        #expect(data?.first?["id"] as? String == "menubartranslate")
+    }
+
+    @Test("KISS concise OpenAI prompt translates the trailing text only")
+    func kissConcisePrompt() async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "model": "menubartranslate",
+            "stream": false,
+            "messages": [
+                [
+                    "role": "user",
+                    "content": """
+                    Translate the following text into Japanese - 日本語. Preserve all HTML-like tags. Output ONLY the translated text without any explanation:
+                    Hello world
+                    """,
+                ],
+            ],
+        ])
+        let result = await ImmersiveTranslate.handleHTTP(
+            method: "POST", path: "/v1/chat/completions", body: body
+        ) { text, pair in
+            #expect(text == "Hello world")
+            #expect(pair.token == "en-ja")
+            return "こんにちは世界"
+        }
+        #expect(result.status == 200)
+        let json = try JSONSerialization.jsonObject(with: result.body) as? [String: Any]
+        let choices = json?["choices"] as? [[String: Any]]
+        let message = choices?.first?["message"] as? [String: String]
+        #expect(message?["content"] == "こんにちは世界")
+    }
+
+    @Test("KISS JSON batch segments return a JSON array content")
+    func kissJSONBatchPrompt() async throws {
+        let user = """
+        Translate the text field of each object in the JSON array below into English - English. Keep the id unchanged and output a raw JSON array. Output ONLY the translated JSON result without any additional explanation:
+        [{"id":0,"text":"こんにちは"},{"id":1,"text":"世界"}]
+        """
+        let body = try JSONSerialization.data(withJSONObject: [
+            "model": "menubartranslate",
+            "messages": [["role": "user", "content": user]],
+        ])
+        let result = await ImmersiveTranslate.handleHTTP(
+            method: "POST", path: "/v1/chat/completions", body: body
+        ) { text, pair in
+            #expect(pair.targetCode == "en")
+            #expect(pair.sourceCode == "ja" || pair.sourceCode == "zh")
+            return "[\(text)]"
+        }
+        #expect(result.status == 200)
+        let json = try JSONSerialization.jsonObject(with: result.body) as? [String: Any]
+        let choices = json?["choices"] as? [[String: Any]]
+        let content = (choices?.first?["message"] as? [String: String])?["content"] ?? ""
+        let arr = try JSONSerialization.jsonObject(with: Data(content.utf8)) as? [[String: Any]]
+        #expect(arr?.count == 2)
+        #expect(arr?[0]["id"] as? Int == 0)
+        #expect(arr?[0]["text"] as? String == "[こんにちは]")
+        #expect(arr?[1]["text"] as? String == "[世界]")
+    }
+
+    @Test("OpenAI stream=true returns a single-chunk SSE body")
+    func openaiStreamSSE() async throws {
+        let body = try JSONSerialization.data(withJSONObject: [
+            "model": "menubartranslate",
+            "stream": true,
+            "messages": [
+                ["role": "user", "content": "Translate the following text into English:\n\nこんにちは"],
+            ],
+        ])
+        let result = await ImmersiveTranslate.handleHTTP(
+            method: "POST", path: "/v1/chat/completions", body: body
+        ) { text, _ in
+            "Hello (\(text))"
+        }
+        #expect(result.status == 200)
+        #expect(result.contentType == "text/event-stream")
+        let text = String(decoding: result.body, as: UTF8.self)
+        #expect(text.contains("data: "))
+        #expect(text.contains("Hello (こんにちは)"))
+        #expect(text.contains("data: [DONE]"))
     }
 
     @Test("POST accepts gzip-compressed JSON")

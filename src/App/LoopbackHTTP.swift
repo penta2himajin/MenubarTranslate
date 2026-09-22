@@ -1,8 +1,9 @@
 import Foundation
 import Network
 
-/// Loopback HTTP/1.1 listener for the Immersive Translate Custom API (ADR 0011).
-/// Binds `127.0.0.1` / `::1` only. Translation still goes through `AppRuntime`.
+/// Loopback HTTP/1.1 listener for Immersive Custom API and a thin OpenAI-compatible
+/// chat facade (ADR 0011). Binds `127.0.0.1` / `::1` only. Translation still goes
+/// through `AppRuntime`.
 public final class LoopbackHTTPServer: @unchecked Sendable {
     private let listener: NWListener
     private let translateMany: @MainActor @Sendable ([(String, LanguagePair)]) async throws -> [String]
@@ -80,32 +81,33 @@ public final class LoopbackHTTPServer: @unchecked Sendable {
             reply(connection, status: 204, body: Data())
             return
         }
-        guard method == "POST" else {
-            reply(connection, status: 405, body: Data("{\"error\":\"method not allowed\"}".utf8))
-            return
-        }
         httpLog(
-            "post \(request.body.count) bytes hex[\(HTTPPayload.hexPrefix(request.body))]"
+            "\(method) \(request.path) \(request.body.count) bytes hex[\(HTTPPayload.hexPrefix(request.body))]"
         )
         let t0 = Date()
         var n = 0
-        let result = await ImmersiveTranslate.handlePOST(body: request.body) { items in
+        let result = await ImmersiveTranslate.handleHTTP(
+            method: method, path: request.path, body: request.body
+        ) { items in
             n = items.count
             return try await self.translateMany(items)
         }
         let ms = Int(Date().timeIntervalSince(t0) * 1000)
         httpLog("status \(result.status) n=\(n) ms=\(ms)")
-        reply(connection, status: result.status, body: result.body)
+        reply(connection, status: result.status, body: result.body, contentType: result.contentType)
     }
 
-    private func reply(_ connection: NWConnection, status: Int, body: Data) {
+    private func reply(
+        _ connection: NWConnection, status: Int, body: Data,
+        contentType: String = "application/json"
+    ) {
         let reason = status == 200 ? "OK" : status == 204 ? "No Content" : "Error"
         var head = "HTTP/1.1 \(status) \(reason)\r\n"
         head += "Access-Control-Allow-Origin: *\r\n"
-        head += "Access-Control-Allow-Methods: POST, OPTIONS\r\n"
+        head += "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
         head += "Access-Control-Allow-Headers: *\r\n"
         head += "Access-Control-Allow-Private-Network: true\r\n"
-        head += "Content-Type: application/json\r\n"
+        head += "Content-Type: \(contentType)\r\n"
         head += "Content-Length: \(body.count)\r\n"
         head += "Connection: close\r\n\r\n"
         var payload = Data(head.utf8)
@@ -118,6 +120,7 @@ public final class LoopbackHTTPServer: @unchecked Sendable {
 
 struct HTTPRequest: Equatable {
     var method: String
+    var path: String
     var body: Data
 
     static func parse(_ data: Data, complete: Bool = false) -> HTTPRequest? {
@@ -138,7 +141,9 @@ struct HTTPRequest: Equatable {
         guard let header = String(data: headerData, encoding: .utf8) else { return nil }
         let lines = header.components(separatedBy: lineBreak)
         guard let requestLine = lines.first else { return nil }
-        let method = requestLine.split(separator: " ").first.map(String.init) ?? ""
+        let tokens = requestLine.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+        let method = tokens.first.map(String.init) ?? ""
+        let path = tokens.count > 1 ? String(tokens[1]) : "/"
         var contentLength: Int?
         var chunked = false
         for line in lines.dropFirst() {
@@ -154,13 +159,18 @@ struct HTTPRequest: Equatable {
             }
         }
         let rawBody = data[range.upperBound...]
+        let methodUpper = method.uppercased()
+        let bodyless = methodUpper == "GET" || methodUpper == "HEAD" || methodUpper == "OPTIONS"
         let slice: Data
         if let contentLength {
             guard rawBody.count >= contentLength else { return nil }
             slice = Data(rawBody.prefix(contentLength))
+        } else if bodyless {
+            // Keep-alive clients never set isComplete; treat header-only verbs as done.
+            slice = Data()
         } else if complete || chunked {
             if chunked, let decoded = decodeChunked(Data(rawBody)) {
-                return HTTPRequest(method: method, body: decoded)
+                return HTTPRequest(method: method, path: path, body: decoded)
             }
             if chunked, !complete { return nil }
             guard complete else { return nil }
@@ -169,9 +179,9 @@ struct HTTPRequest: Equatable {
             return nil
         }
         if chunked, let decoded = decodeChunked(slice) {
-            return HTTPRequest(method: method, body: decoded)
+            return HTTPRequest(method: method, path: path, body: decoded)
         }
-        return HTTPRequest(method: method, body: slice)
+        return HTTPRequest(method: method, path: path, body: slice)
     }
 
     static func decodeChunked(_ data: Data) -> Data? {

@@ -15,7 +15,7 @@ Settled engineering judgements for MenubarTranslate. English-only per
 | 0008 | Runtime selection: TranslateGemma-4B on MLX 4-bit (measured) | Superseded by 0009 |
 | 0009 | Model selection: Gemma 4 E2B, GGUF only, no local fallback | Accepted (amended: MLX claim; Hy-MT2 Apache 2.0) |
 | 0010 | Distribution: unsigned release via Homebrew, model fetched by script | Accepted |
-| 0011 | Loopback HTTP for Immersive Translate | Accepted |
+| 0011 | Loopback HTTP for browser extensions (Immersive + OpenAI facade) | Accepted |
 
 Several decisions depend on measurements that are **not yet done on real hardware**;
 those are tracked in `docs/validation.md` and may reopen the relevant ADR.
